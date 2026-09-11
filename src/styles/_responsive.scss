@@ -1,23 +1,8 @@
 @media (max-width: 900px) {
-  .library-layout {
-    gap: 18px;
-  }
-
-  .date-rail {
-    position: static;
-  }
-
-  .hero h1 {
-    font-size: 58px;
-  }
-}
-
-@media (max-width: 600px) {
   .topbar {
-    min-height: 64px;
     flex-wrap: wrap;
     gap: 14px;
-    padding: 0 20px;
+    padding: 14px 24px 0;
   }
 
   .brand-group {
@@ -38,6 +23,29 @@
     order: -1;
     flex: 1 1 100%;
     width: auto;
+  }
+
+  .library-layout {
+    gap: 18px;
+  }
+
+  .date-rail {
+    position: static;
+  }
+
+  .hero h1 {
+    font-size: 58px;
+  }
+}
+
+@media (max-width: 600px) {
+  .topbar {
+    min-height: 64px;
+    padding: 10px 16px 0;
+  }
+
+  .brand-logo {
+    width: min(160px, 52vw);
   }
 
   .workspace {

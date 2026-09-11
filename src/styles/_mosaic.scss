@@ -30,14 +30,20 @@ app-video-card {
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--line) 70%, var(--paper));
   box-shadow: 0 2px 0 rgba(36, 36, 36, 0.04);
-  transition:
-    box-shadow 0.25s ease,
-    transform 0.25s ease;
+  transition: box-shadow 0.25s ease;
+}
+
+.media-frame:has(.album-add-control.open) {
+  overflow: visible;
+}
+
+.media-frame:has(.album-add-control.open) video,
+.media-frame:has(.album-add-control.open) .media-shade {
+  border-radius: var(--radius-md);
 }
 
 .video-card:hover .media-frame {
   box-shadow: 0 14px 28px rgba(36, 36, 36, 0.14);
-  transform: translateY(-2px);
 }
 
 .media-frame video {
@@ -79,7 +85,7 @@ app-video-card {
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: rgba(36, 36, 36, 0.42);
+  background: var(--coral);
   box-shadow: 0 4px 12px rgba(36, 36, 36, 0.18);
   color: white;
   cursor: pointer;

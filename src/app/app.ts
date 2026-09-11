@@ -57,7 +57,7 @@ export class App implements OnInit {
   protected readonly albumSaving = signal(false);
   protected readonly albumStatus = signal('');
   protected readonly nightMode = signal(false);
-  protected readonly groupingMode = signal<'day' | 'week' | 'month'>('day');
+  protected readonly groupingMode = signal<'day' | 'week' | 'month'>('month');
   protected readonly gridGap = signal(6);
   protected readonly dateRangeStart = signal('');
   protected readonly dateRangeEnd = signal('');
@@ -362,7 +362,8 @@ export class App implements OnInit {
     const maximumDuration = Number(this.durationMaxSeconds());
     return this.videos().filter((video) => {
       const loadedDurationMs = this.videoDurations().get(video.id);
-      const durationMs = loadedDurationMs !== undefined ? loadedDurationMs * 1000 : video.durationMs;
+      const durationMs =
+        loadedDurationMs !== undefined ? loadedDurationMs * 1000 : video.durationMs;
       const date = this.videoDateKey(video.captureDate);
       if (!date) return false;
       if (day && date.slice(5) !== day) return false;

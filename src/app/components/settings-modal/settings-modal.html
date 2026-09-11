@@ -25,11 +25,11 @@
         <input
           type="radio"
           name="grouping"
-          value="day"
-          [checked]="groupingMode() === 'day'"
+          value="month"
+          [checked]="groupingMode() === 'month'"
           (change)="groupingChange.emit($event)"
         />
-        <span><strong>Day</strong><small>Show each calendar day separately</small></span>
+        <span><strong>Month</strong><small>Group the whole calendar month</small></span>
       </label>
       <label class="grouping-option">
         <input
@@ -45,11 +45,11 @@
         <input
           type="radio"
           name="grouping"
-          value="month"
-          [checked]="groupingMode() === 'month'"
+          value="day"
+          [checked]="groupingMode() === 'day'"
           (change)="groupingChange.emit($event)"
         />
-        <span><strong>Month</strong><small>Group the whole calendar month</small></span>
+        <span><strong>Day</strong><small>Show each calendar day separately</small></span>
       </label>
     </div>
     <label class="settings-range">

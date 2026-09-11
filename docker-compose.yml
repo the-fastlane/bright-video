@@ -4,7 +4,7 @@ services:
     container_name: bright-video
     restart: unless-stopped
     ports:
-      - '3000:3000'
+      - '8420:3000'
     environment:
       PORT: 3000
       VIDEO_ROOT: /data/videos

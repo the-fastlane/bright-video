@@ -1,7 +1,10 @@
 <header class="topbar">
   <div class="brand-group">
     <a class="brand" href="/" aria-label="Bright Video home"
-      ><img class="brand-logo" src="/logo-bright-video-4.gif" alt="Bright Video"
+      ><img
+        class="brand-logo"
+        [src]="nightMode() ? '/logo-bright-video-darkmode.gif' : '/logo-bright-video.gif'"
+        alt="Bright Video"
     /></a>
     <span class="loaded-count">{{ videoCount() }} videos found</span>
   </div>
