@@ -1,0 +1,207 @@
+.albums-page {
+  min-height: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 42px clamp(24px, 5vw, 84px) 80px;
+}
+
+.albums-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 34px;
+  border-bottom: 1px solid var(--line);
+}
+
+.albums-page-header h1 {
+  margin: 7px 0 5px;
+  color: var(--ink);
+  font: 700 clamp(34px, 5vw, 58px)/0.95 var(--display);
+}
+
+.albums-page-header p,
+.album-management-copy small,
+.album-create-panel small,
+.albums-empty {
+  color: var(--muted);
+  font: 13px/1.4 var(--body);
+}
+
+.albums-page-header p {
+  margin: 0;
+}
+
+.albums-page-close {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: 28px/1 var(--body);
+}
+
+.albums-page-close:hover,
+.albums-page-close:focus-visible {
+  border-color: var(--coral);
+  color: var(--coral);
+}
+
+.album-create-panel {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.2fr) minmax(150px, 1fr) minmax(170px, 1.5fr) 82px auto;
+  align-items: end;
+  gap: 12px;
+  margin: 28px 0;
+  padding: 18px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--coral) 8%, var(--surface));
+  box-shadow: var(--shadow-soft);
+}
+
+.album-create-panel > div,
+.album-management-copy {
+  display: grid;
+  gap: 5px;
+}
+
+.album-create-panel strong,
+.album-management-copy strong {
+  color: var(--ink);
+  font: 700 14px var(--body);
+}
+
+.album-create-panel input,
+.album-management-fields input,
+.album-settings select,
+.album-settings input {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: 12px var(--body);
+}
+
+.album-create-panel button,
+.album-management-fields button,
+.album-settings button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 9px 12px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: 700 11px var(--body);
+  white-space: nowrap;
+}
+
+.album-create-panel button:hover,
+.album-management-fields button:hover,
+.album-management-fields button:focus-visible,
+.album-settings button:hover {
+  border-color: var(--coral);
+  color: var(--coral);
+}
+
+.albums-list {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+
+.album-management-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.8fr);
+  gap: 24px;
+  align-items: center;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.album-management-order,
+.album-settings-heading,
+.album-create-form,
+.album-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.album-management-order {
+  gap: 15px;
+}
+
+.album-index {
+  color: var(--coral);
+  font: 700 12px var(--body);
+}
+
+.album-management-copy strong {
+  font-size: 15px;
+}
+
+.album-management-fields {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) minmax(120px, 1.4fr) 70px auto auto auto;
+  gap: 8px;
+}
+
+.album-management-fields .album-view-button.active,
+.album-management-fields .album-delete,
+.album-settings .album-delete {
+  color: var(--coral);
+}
+
+.albums-empty {
+  display: grid;
+  gap: 8px;
+  padding: 60px 0;
+  text-align: center;
+}
+
+.albums-empty strong {
+  color: var(--ink);
+  font: 700 18px var(--body);
+}
+
+.album-settings {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.album-settings-heading {
+  justify-content: space-between;
+}
+
+.album-settings-heading span {
+  display: grid;
+  gap: 3px;
+}
+
+.album-settings-heading small {
+  color: var(--muted);
+  font: 11px var(--body);
+}
+
+.album-create-form input:first-child,
+.album-row input:first-child {
+  flex: 1.2;
+}
+
+.album-create-form input:nth-child(2),
+.album-row input:nth-child(2) {
+  flex: 2;
+}
+
+.album-create-form input[type='number'],
+.album-row input[type='number'] {
+  width: 72px;
+}

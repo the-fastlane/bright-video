@@ -1,0 +1,177 @@
+.video-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--video-grid-gap, 6px);
+}
+
+app-video-card {
+  display: contents;
+}
+
+.video-card {
+  flex: 0 0 auto;
+  width: auto;
+  height: clamp(180px, 18vw, 250px);
+  aspect-ratio: var(--video-aspect-ratio, 1);
+  cursor: pointer;
+  outline: none;
+}
+
+.video-card:focus-visible .media-frame {
+  box-shadow: 0 0 0 3px var(--coral);
+}
+
+.media-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--line) 70%, var(--paper));
+  box-shadow: 0 2px 0 rgba(36, 36, 36, 0.04);
+  transition:
+    box-shadow 0.25s ease,
+    transform 0.25s ease;
+}
+
+.video-card:hover .media-frame {
+  box-shadow: 0 14px 28px rgba(36, 36, 36, 0.14);
+  transform: translateY(-2px);
+}
+
+.media-frame video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-shade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(0deg, rgba(25, 24, 22, 0.42), transparent 55%);
+  pointer-events: none;
+}
+
+.album-add-control {
+  position: absolute;
+  bottom: 12px;
+  left: 14px;
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+
+.video-card:hover .album-add-control,
+.video-card:focus-within .album-add-control,
+.album-add-control.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.album-add-button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(36, 36, 36, 0.42);
+  box-shadow: 0 4px 12px rgba(36, 36, 36, 0.18);
+  color: white;
+  cursor: pointer;
+  font: 400 var(--body);
+}
+
+.album-add-button span {
+  display: block;
+  transform: translateY(-1px);
+}
+
+.album-add-button:hover,
+.album-add-button:focus-visible,
+.album-add-control.open .album-add-button {
+  background: var(--coral);
+  outline: none;
+}
+
+.album-add-menu {
+  position: absolute;
+  bottom: 40px;
+  left: 0;
+  display: grid;
+  width: 190px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-modal);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(5px);
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.album-add-control.open .album-add-menu {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.album-add-menu button {
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font: 12px var(--body);
+  text-align: left;
+}
+
+.album-add-menu button:hover,
+.album-add-menu button:focus-visible {
+  background: color-mix(in srgb, var(--coral) 12%, transparent);
+  color: var(--coral);
+  outline: none;
+}
+
+.duration-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  overflow: hidden;
+  isolation: isolate;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 3px 10px rgba(36, 36, 36, 0.1);
+  color: var(--duration-ink);
+  font: 700 10px var(--body);
+  letter-spacing: 0.04em;
+}
+
+.duration-badge::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: rgba(45, 43, 39, 0.28);
+  content: '';
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.duration-badge.loading::before {
+  animation: preview-loading 0.65s linear forwards;
+}
+
+@media (max-width: 600px) {
+  .video-card {
+    height: clamp(140px, 42vw, 190px);
+  }
+}

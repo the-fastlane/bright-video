@@ -1,0 +1,14 @@
+services:
+  bright-video:
+    image: ${BRIGHT_VIDEO_IMAGE:-ghcr.io/your-github-user/bright-video:latest}
+    container_name: bright-video
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      PORT: 3000
+      VIDEO_ROOT: /data/videos
+      DATABASE_PATH: /data/catalog/bright-video.db
+    volumes:
+      - ./videos:/data/videos:ro
+      - ./catalog:/data/catalog

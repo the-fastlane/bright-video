@@ -1,0 +1,52 @@
+$paper: #f8f8f6;
+$surface: #ffffff;
+$ink: #242424;
+$ink-soft: #66645f;
+$muted: #92908a;
+$line: #e7e5e0;
+$coral: #e85d4a;
+$sage: #4d9b77;
+$brand-blue: #2f5597;
+$brand-orange: #f58220;
+$shadow-soft: 0 8px 24px rgba(36, 36, 36, 0.08);
+$shadow-modal: 0 24px 70px rgba(36, 36, 36, 0.18);
+$radius-sm: 10px;
+$radius-md: 16px;
+$radius-lg: 22px;
+$body-font: 'DM Sans', sans-serif;
+$display-font: 'DM Sans', sans-serif;
+
+:root {
+  --paper: #{$paper};
+  --surface: #{$surface};
+  --ink: #{$ink};
+  --ink-soft: #{$ink-soft};
+  --muted: #{$muted};
+  --line: #{$line};
+  --coral: #{$coral};
+  --sage: #{$sage};
+  --brand-blue: #{$brand-blue};
+  --brand-orange: #{$brand-orange};
+  --shadow-soft: #{$shadow-soft};
+  --shadow-modal: #{$shadow-modal};
+  --radius-sm: #{$radius-sm};
+  --radius-md: #{$radius-md};
+  --radius-lg: #{$radius-lg};
+  --duration-ink: #{$ink};
+  --body: #{$body-font};
+  --display: #{$display-font};
+}
+
+.night-mode {
+  --paper: #20252b;
+  --surface: #2a3036;
+  --ink: #f1eee6;
+  --ink-soft: #c4c7c9;
+  --muted: #9299a0;
+  --line: #3c444d;
+  --coral: #f08a73;
+  --sage: #91b69a;
+  --brand-blue: #86b6f2;
+  --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.2);
+  --shadow-modal: 0 24px 70px rgba(0, 0, 0, 0.36);
+}

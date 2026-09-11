@@ -1,0 +1,111 @@
+<div class="library-layout">
+  <div class="timeline" [style.--video-grid-gap.px]="gridGap()">
+    @if (catalogLoading()) {
+      <div class="empty-state loading-state">
+        <span aria-hidden="true">…</span>
+        <h2>Loading videos</h2>
+        <p>Preparing your local library.</p>
+      </div>
+    } @else {
+      @for (yearGroup of yearGroups(); track yearGroup.year) {
+        <section class="year-section">
+          <span class="section-year">{{ yearGroup.year }}</span>
+          <div class="year-months">
+            @for (group of yearGroup.groups; track group.key) {
+              <section
+                #daySection
+                class="month-section"
+                [id]="group.key"
+                [attr.data-month-key]="group.monthKey"
+                [attr.data-virtual-section]="group.key"
+              >
+                <div class="section-heading">
+                  <div class="section-date">
+                    <h2>{{ group.label }}</h2>
+                    <span class="item-count"
+                      >{{ group.videos.length }}
+                      {{ group.videos.length === 1 ? 'video' : 'videos' }}</span
+                    >
+                  </div>
+                </div>
+                @if ($index < 8 || renderedSectionKeys().has(group.key)) {
+                  <div #videoGrid class="video-grid">
+                    @for (video of group.videos; track video.id) {
+                      <app-video-card
+                        [video]="video"
+                        [loaded]="loadedVideoIds().has(video.id)"
+                        [duration]="formatDuration(video)"
+                        [previewLoading]="previewLoadingId() === video.id"
+                        (open)="openVideo.emit($event)"
+                        (addToExistingAlbum)="addToExistingAlbum.emit($event)"
+                        (createAlbum)="createAlbum.emit($event)"
+                        (menuOpened)="setOpenCard($event)"
+                        (previewStart)="previewStart.emit($event)"
+                        (previewStop)="previewStop.emit($event)"
+                        (durationLoaded)="durationLoaded.emit($event)"
+                      />
+                    }
+                  </div>
+                } @else {
+                  <div
+                    class="virtual-grid-spacer"
+                    [style.height.px]="sectionHeight(group.key, group.videos.length)"
+                    aria-hidden="true"
+                  ></div>
+                }
+              </section>
+            }
+          </div>
+        </section>
+      } @empty {
+        <div class="empty-state">
+          <span>⌁</span>
+          @if (hasDateFilter()) {
+            <p class="empty-state-filter">{{ dateFilterSummary() }}</p>
+            <h2>No videos matching those dates</h2>
+            <p>Try adjusting or clearing the date filter.</p>
+          } @else {
+            <h2>No videos in your library</h2>
+            <p>Add videos to the local library, then rescan.</p>
+          }
+        </div>
+      }
+    }
+  </div>
+  <div class="date-rail-shell" [class.has-more]="dateRailHasMore()">
+    <nav
+      #dateRail
+      class="date-rail"
+      aria-label="Jump to date"
+      (scroll)="updateDateRailArrow(dateRail)"
+    >
+      <span class="rail-label">Timeline</span>
+      @for (year of yearAnchors(); track year.year) {
+        <div class="year-rail-group">
+          <button
+            class="year-rail-label year-rail-link"
+            type="button"
+            [attr.aria-label]="'Jump to ' + year.year"
+            (click)="jumpTo(year.months[0].key)"
+          >
+            {{ year.year }}
+          </button>
+          <div class="month-ticks">
+            @for (month of year.months; track month.key) {
+              <button
+                type="button"
+                [class.active]="activeMonth() === month.key"
+                [attr.aria-label]="'Jump to ' + month.label + ' ' + year.year"
+                [title]="month.label"
+                (click)="jumpTo(month.key)"
+              >
+                <span>{{ month.label }}</span>
+              </button>
+            }
+          </div>
+        </div>
+      }
+    </nav>
+    <span class="date-rail-arrow" aria-hidden="true">↓</span>
+  </div>
+</div>

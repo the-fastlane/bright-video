@@ -1,0 +1,182 @@
+@media (max-width: 900px) {
+  .library-layout {
+    gap: 18px;
+  }
+
+  .date-rail {
+    position: static;
+  }
+
+  .hero h1 {
+    font-size: 58px;
+  }
+}
+
+@media (max-width: 600px) {
+  .topbar {
+    min-height: 64px;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 0 20px;
+  }
+
+  .brand-group {
+    gap: 10px;
+  }
+
+  .loaded-count {
+    font-size: 10px;
+  }
+
+  .top-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    padding-bottom: 14px;
+  }
+
+  .header-search {
+    order: -1;
+    flex: 1 1 100%;
+    width: auto;
+  }
+
+  .workspace {
+    padding: 42px 20px 70px;
+  }
+
+  .month-section {
+    scroll-margin-top: 156px;
+  }
+
+  .section-year {
+    top: 186px;
+  }
+
+  .hero {
+    display: block;
+    padding-bottom: 42px;
+  }
+
+  .hero h1 {
+    font-size: 49px;
+  }
+
+  .hero-note {
+    margin-top: 28px;
+  }
+
+  .date-filters {
+    align-items: stretch;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .date-filter-backdrop {
+    padding: 84px 12px 12px;
+  }
+
+  .date-filter-modal {
+    padding: 20px;
+  }
+
+  .date-filter-group {
+    flex-wrap: wrap;
+  }
+
+  .date-filter-divider {
+    display: none;
+  }
+
+  .single-day-filter {
+    flex: 1 1 100%;
+  }
+
+  .clear-date-filter {
+    align-self: end;
+  }
+
+  .toolbar {
+    margin-bottom: 42px;
+  }
+
+  .library-layout {
+    display: block;
+  }
+
+  .date-rail-shell {
+    width: 100%;
+    height: calc(100dvh - 24px);
+  }
+
+  .date-rail {
+    display: flex;
+    flex-direction: column;
+    position: static;
+    z-index: 2;
+    justify-content: start;
+    margin: -20px 0 38px;
+    padding: 8px 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+    background: var(--paper);
+  }
+
+  .date-rail .rail-label {
+    align-self: center;
+    white-space: nowrap;
+  }
+
+  .year-rail-group {
+    flex: 0 0 auto;
+  }
+
+  .year-rail-label {
+    text-align: left;
+  }
+
+  .month-ticks {
+    width: 100%;
+  }
+
+  .section-heading h2 {
+    font-size: 22px;
+  }
+
+  .item-count {
+    font-size: 11px;
+  }
+
+  .viewer-backdrop {
+    padding: 15px;
+  }
+
+  .viewer-details {
+    display: block;
+  }
+
+  .viewer-nav {
+    width: 36px;
+    height: 36px;
+    font-size: 30px;
+  }
+
+  .viewer-nav-previous {
+    left: 8px;
+  }
+
+  .viewer-nav-next {
+    right: 8px;
+  }
+
+  .album-create-panel,
+  .album-management-row {
+    grid-template-columns: 1fr;
+  }
+
+  .album-management-fields {
+    grid-template-columns: 1fr 1fr;
+  }
+}

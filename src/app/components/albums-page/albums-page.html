@@ -1,0 +1,73 @@
+<section class="albums-page" aria-labelledby="albums-page-title">
+    <header class="albums-page-header">
+      <div>
+        <span class="section-kicker">Library</span>
+        <h1 id="albums-page-title">Albums</h1>
+        <p>Build focused collections from your video library.</p>
+      </div>
+      <button class="albums-page-close" type="button" aria-label="Return to library" (click)="close()">
+        ×
+      </button>
+    </header>
+
+    <form class="album-create-panel" (submit)="createAlbum($event)">
+      <div>
+        <strong>Create an album</strong>
+        <small>Give a collection a name and an optional description.</small>
+      </div>
+      <input name="name" placeholder="Album name" aria-label="New album name" required />
+      <input name="description" placeholder="Description" aria-label="New album description" />
+      <input
+        name="displayOrder"
+        type="number"
+        min="0"
+        step="1"
+        value="0"
+        aria-label="New album display order"
+      />
+      <button type="submit">Create album</button>
+    </form>
+
+    @if (albums().length) {
+      <div class="albums-list" aria-label="Albums">
+        @for (album of albums(); track album.id) {
+          <form class="album-management-row" (submit)="updateAlbum($event, album.id)">
+            <div class="album-management-order">
+              <span class="album-index">{{ $index + 1 }}</span>
+              <span class="album-management-copy">
+                <strong>{{ album.name }}</strong>
+                <small>{{ album.description || 'No description' }}</small>
+              </span>
+            </div>
+            <div class="album-management-fields">
+              <input
+                name="name"
+                [value]="album.name"
+                [attr.aria-label]="'Album name: ' + album.name"
+                required
+              />
+              <input name="description" [value]="album.description" aria-label="Album description" />
+              <input
+                name="displayOrder"
+                type="number"
+                min="0"
+                step="1"
+                [value]="album.display_order"
+                aria-label="Album display order"
+              />
+              <button type="button" class="album-view-button" [class.active]="selectedAlbumId() === album.id" (click)="selectAlbum(album.id)">
+                {{ selectedAlbumId() === album.id ? 'Viewing' : 'View videos' }}
+              </button>
+              <button type="submit">Save</button>
+              <button type="button" class="album-delete" (click)="deleteAlbum(album.id)">Delete</button>
+            </div>
+          </form>
+        }
+      </div>
+    } @else {
+      <div class="albums-empty">
+        <strong>No albums yet</strong>
+        <span>Create your first collection above.</span>
+      </div>
+    }
+</section>

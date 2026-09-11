@@ -1,0 +1,32 @@
+app-root {
+  display: block;
+  min-height: 100dvh;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: auto;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  font-family: var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--coral) 28%, transparent);
+  outline-offset: 2px;
+}

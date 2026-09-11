@@ -1,0 +1,11 @@
+.git
+.github
+.angular
+node_modules
+dist
+coverage
+data
+videos
+videos-dev
+.DS_Store
+*.log

@@ -1,0 +1,50 @@
+<article
+  class="video-card"
+  [style.--video-aspect-ratio]="aspectRatio()"
+  (click)="open.emit(video())"
+  (keydown.enter)="open.emit(video())"
+  tabindex="0"
+>
+  <div
+    #mediaFrame
+    class="media-frame"
+    [style.aspect-ratio]="aspectRatio()"
+    [attr.data-video-id]="video().id"
+    (mouseenter)="emitPreviewStart()"
+    (mouseleave)="emitPreviewStop()"
+  >
+    @if (loaded()) {
+      <video
+        [src]="video().url"
+        preload="auto"
+        playsinline
+        muted
+        (loadedmetadata)="durationLoaded.emit({ video: video(), event: $event })"
+      ></video>
+    }
+    <div class="media-shade"></div>
+    <div class="album-add-control" [class.open]="menuOpen" (click)="stopCardClick($event)">
+      <button
+        class="album-add-button"
+        type="button"
+        aria-label="Add video to an album"
+        title="Add to album"
+        [attr.aria-expanded]="menuOpen"
+        (click)="toggleAlbumMenu($event)"
+      >
+        <span aria-hidden="true">+</span>
+      </button>
+      <div class="album-add-menu" role="menu">
+        <button type="button" role="menuitem" (click)="addToExistingAlbum.emit(video())">
+          Add to existing album
+        </button>
+        <button type="button" role="menuitem" (click)="createAlbum.emit(video())">
+          Create new album
+        </button>
+      </div>
+    </div>
+    @if (duration()) {
+      <span class="duration-badge" [class.loading]="previewLoading()">{{ duration() }}</span>
+    }
+  </div>
+</article>

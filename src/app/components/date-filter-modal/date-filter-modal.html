@@ -1,0 +1,102 @@
+<div class="date-filter-backdrop" role="presentation" (click)="close.emit()">
+  <section
+    class="date-filter-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="date-filter-title"
+    (click)="$event.stopPropagation()"
+  >
+    <div class="date-filter-modal-header">
+      <div>
+        <span class="section-kicker">Library filter</span>
+        <h2 id="date-filter-title">Filter by date</h2>
+      </div>
+      <button
+        class="date-filter-close"
+        type="button"
+        aria-label="Close date filter"
+        (click)="close.emit()"
+      >
+        ×
+      </button>
+    </div>
+    <div class="date-filters" aria-label="Filter videos by date">
+      <div class="date-filter-group">
+        <span class="date-filter-label">Date range</span>
+        <label>
+          <span>From</span>
+          <input
+            type="date"
+            [value]="dateRangeStart()"
+            (change)="dateRangeStartChange.emit($event)"
+            aria-label="Start date"
+          />
+        </label>
+        <label>
+          <span>To</span>
+          <input
+            type="date"
+            [value]="dateRangeEnd()"
+            (change)="dateRangeEndChange.emit($event)"
+            aria-label="End date"
+          />
+        </label>
+      </div>
+      <div class="date-filter-divider" aria-hidden="true">or</div>
+      <label class="single-day-filter">
+        <span class="date-filter-label">Same day each year</span>
+        <input
+          type="date"
+          [value]="selectedDay() ? '2000-' + selectedDay() : ''"
+          (change)="selectedDayChange.emit($event)"
+          aria-label="Filter this month and day across all years"
+        />
+      </label>
+    </div>
+    <div class="duration-filters" aria-label="Filter videos by duration">
+      <div class="duration-heading">
+        <span class="date-filter-label">Duration</span>
+        <span class="duration-value" aria-live="polite">
+          {{ formatDuration(durationValue(durationMinSeconds())) }} -
+          {{
+            durationMaxSeconds()
+              ? formatDuration(durationValue(durationMaxSeconds()))
+              : 'Any length'
+          }}
+        </span>
+      </div>
+      <div class="duration-slider">
+        <div class="duration-slider-track" aria-hidden="true"></div>
+        <input
+          class="duration-range duration-range-min"
+          type="range"
+          min="0"
+          [max]="durationSliderMax"
+          step="1"
+          [value]="durationMinSeconds() || 0"
+          (input)="durationMinChange.emit($event)"
+          aria-label="Minimum duration"
+        />
+        <input
+          class="duration-range duration-range-max"
+          type="range"
+          min="0"
+          [max]="durationSliderMax"
+          step="1"
+          [value]="durationMaxSeconds() || durationSliderMax"
+          (input)="durationMaxChange.emit($event)"
+          aria-label="Maximum duration"
+        />
+      </div>
+      <div class="duration-scale" aria-hidden="true"><span>0:00</span><span>15:00+</span></div>
+    </div>
+    <div class="date-filter-modal-footer">
+      <span>{{ matchingVideos() }} matching videos</span>
+      @if (hasDateFilter() || durationMinSeconds() || durationMaxSeconds()) {
+        <button class="clear-date-filter" type="button" (click)="clear.emit()">
+          Clear filters
+        </button>
+      }
+    </div>
+  </section>
+</div>

@@ -1,0 +1,38 @@
+<div class="viewer-backdrop" role="presentation" (click)="close.emit()">
+  <section
+    class="viewer"
+    role="dialog"
+    aria-modal="true"
+    [attr.aria-label]="video().title"
+    (click)="$event.stopPropagation()"
+  >
+    <button
+      class="viewer-nav viewer-nav-previous"
+      type="button"
+      aria-label="Previous video"
+      [disabled]="!canGoPrevious()"
+      (click)="previous.emit()"
+    >
+      ‹
+    </button>
+    <button class="viewer-close" type="button" aria-label="Close viewer" (click)="close.emit()">
+      ×
+    </button>
+    <video [src]="video().url" controls autoplay playsinline></video>
+    <div class="viewer-details">
+      <div>
+        <span class="section-kicker">{{ dateLabel() }}</span>
+        <h2>{{ video().title }}</h2>
+      </div>
+    </div>
+    <button
+      class="viewer-nav viewer-nav-next"
+      type="button"
+      aria-label="Next video"
+      [disabled]="!canGoNext()"
+      (click)="next.emit()"
+    >
+      ›
+    </button>
+  </section>
+</div>

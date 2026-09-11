@@ -1,0 +1,173 @@
+<div class="shell" [class.night-mode]="nightMode()">
+  <app-header
+    [videoCount]="videos().length"
+    [searchQuery]="searchQuery()"
+    [searchLoading]="searchLoading()"
+    [hasDateFilter]="hasDateFilter"
+    [dateFilterSummary]="dateFilterSummary"
+    [nightMode]="nightMode()"
+    [rescanning]="rescanning()"
+    [rescanMessage]="rescanMessage()"
+    [rescanState]="rescanState()"
+    [rescanProgress]="rescanProgress()"
+    (openDateFilters)="openDateFilters()"
+    (toggleNightMode)="toggleNightMode()"
+    (openSettings)="openSettings()"
+    (openAlbums)="openAlbums()"
+    (rescanLibrary)="rescanLibrary()"
+    (searchChange)="setSearchQuery($event)"
+  />
+
+  <main class="workspace">
+    @if (albumsPageRoute()) {
+      <router-outlet />
+    } @else {
+      <app-timeline
+        [yearGroups]="yearGroups"
+        [yearAnchors]="yearAnchors"
+        [catalogLoading]="catalogLoading()"
+        [hasDateFilter]="hasDateFilter"
+        [dateFilterSummary]="dateFilterSummary"
+        [gridGap]="gridGap()"
+        [activeMonth]="activeMonth()"
+        [loadedVideoIds]="loadedVideoIds()"
+        [videoDurations]="videoDurations()"
+        [previewLoadingId]="previewLoading()"
+        (openVideo)="openViewer($event)"
+        (addToExistingAlbum)="openAlbumAssignment($event, 'existing')"
+        (createAlbum)="openAlbumAssignment($event, 'new')"
+        (previewStart)="handlePreviewStart($event)"
+        (previewStop)="stopPreview($event)"
+        (durationLoaded)="setVideoDuration($event.video, $event.event)"
+        (loadedVideoIdsChange)="loadedVideoIds.set($event)"
+        (activeMonthChange)="activeMonth.set($event)"
+      />
+    }
+  </main>
+</div>
+
+@if (settingsOpen()) {
+  <app-settings-modal
+    [groupingMode]="groupingMode()"
+    [gridGap]="gridGap()"
+    (close)="closeSettings()"
+    (groupingChange)="setGroupingMode($event)"
+    (gridGapChange)="setGridGap($event)"
+  />
+}
+
+@if (albumAssignmentVideo(); as video) {
+  <div class="album-assignment-backdrop" role="presentation" (click)="closeAlbumAssignment()">
+    <section
+      class="album-assignment-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="album-assignment-title"
+      (click)="$event.stopPropagation()"
+    >
+      <button class="modal-close" type="button" aria-label="Close" (click)="closeAlbumAssignment()">
+        ×
+      </button>
+      <span class="section-kicker">Organize video</span>
+      <h2 id="album-assignment-title">
+        {{ albumAssignmentMode() === 'new' ? 'Create an album' : 'Add to albums' }}
+      </h2>
+      <p class="album-assignment-video">{{ video.title }}</p>
+
+      @if (albumAssignmentMode() === 'new') {
+        <label class="album-name-field">
+          <span>Album name</span>
+          <input
+            type="text"
+            [value]="newAlbumName()"
+            aria-describedby="album-name-error"
+            (input)="setNewAlbumName($event)"
+            autofocus
+          />
+        </label>
+        @if (albumNameError()) {
+          <p id="album-name-error" class="album-form-error" role="alert">{{ albumNameError() }}</p>
+        }
+        <div class="album-dialog-actions">
+          <button type="button" class="secondary-button" (click)="closeAlbumAssignment()">
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="primary-button"
+            [disabled]="!canCreateAlbum() || albumSaving()"
+            (click)="createAndAssignAlbum()"
+          >
+            {{ albumSaving() ? 'Creating...' : 'Create and add' }}
+          </button>
+        </div>
+      } @else {
+        @if (albums().length) {
+          <div class="album-assignment-list" aria-label="Albums">
+            @for (album of albums(); track album.id) {
+              <label class="album-assignment-option">
+                <input
+                  type="checkbox"
+                  [checked]="albumAssignmentIds().has(album.id)"
+                  [disabled]="albumSaving()"
+                  (change)="toggleAlbumAssignment(album.id)"
+                />
+                <span>{{ album.name }}</span>
+              </label>
+            }
+          </div>
+          <div class="album-dialog-actions">
+            <button type="button" class="secondary-button" (click)="closeAlbumAssignment()">
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="primary-button"
+              [disabled]="albumSaving()"
+              (click)="saveAlbumAssignment()"
+            >
+              {{ albumSaving() ? 'Saving...' : 'Save' }}
+            </button>
+          </div>
+          <span class="viewer-album-status" aria-live="polite">{{ albumStatus() }}</span>
+        } @else {
+          <p class="album-assignment-empty">No albums yet. Create one to get started.</p>
+          <button type="button" class="primary-button" (click)="albumAssignmentMode.set('new')">
+            Create new album
+          </button>
+        }
+      }
+    </section>
+  </div>
+}
+
+@if (dateFiltersOpen()) {
+  <app-date-filter-modal
+    [dateRangeStart]="dateRangeStart()"
+    [dateRangeEnd]="dateRangeEnd()"
+    [selectedDay]="selectedDay()"
+    [durationMinSeconds]="durationMinSeconds()"
+    [durationMaxSeconds]="durationMaxSeconds()"
+    [matchingVideos]="filteredVideos.length"
+    [hasDateFilter]="hasDateFilter"
+    (close)="closeDateFilters()"
+    (dateRangeStartChange)="setDateRangeStart($event)"
+    (dateRangeEndChange)="setDateRangeEnd($event)"
+    (selectedDayChange)="setSelectedDay($event)"
+    (durationMinChange)="setDurationMin($event)"
+    (durationMaxChange)="setDurationMax($event)"
+    (clear)="clearDateFilters()"
+  />
+}
+
+@if (activeVideo(); as video) {
+  <app-video-viewer
+    [video]="video"
+    [dateLabel]="formatDate(video.captureDate)"
+    [canGoPrevious]="viewerIndex > 0"
+    [canGoNext]="viewerIndex >= 0 && viewerIndex < filteredVideos.length - 1"
+    (close)="closeViewer()"
+    (previous)="navigateViewer(-1)"
+    (next)="navigateViewer(1)"
+  />
+}

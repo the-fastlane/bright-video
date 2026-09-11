@@ -1,0 +1,71 @@
+<div class="settings-backdrop" role="presentation" (click)="close.emit()">
+  <section
+    class="settings-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="settings-title"
+    (click)="$event.stopPropagation()"
+  >
+    <div class="date-filter-modal-header">
+      <div>
+        <span class="section-kicker">Library settings</span>
+        <h2 id="settings-title">Group videos by</h2>
+      </div>
+      <button
+        class="date-filter-close"
+        type="button"
+        aria-label="Close settings"
+        (click)="close.emit()"
+      >
+        ×
+      </button>
+    </div>
+    <div class="grouping-options" aria-label="Video grouping">
+      <label class="grouping-option">
+        <input
+          type="radio"
+          name="grouping"
+          value="day"
+          [checked]="groupingMode() === 'day'"
+          (change)="groupingChange.emit($event)"
+        />
+        <span><strong>Day</strong><small>Show each calendar day separately</small></span>
+      </label>
+      <label class="grouping-option">
+        <input
+          type="radio"
+          name="grouping"
+          value="week"
+          [checked]="groupingMode() === 'week'"
+          (change)="groupingChange.emit($event)"
+        />
+        <span><strong>Week</strong><small>Group Monday through Sunday</small></span>
+      </label>
+      <label class="grouping-option">
+        <input
+          type="radio"
+          name="grouping"
+          value="month"
+          [checked]="groupingMode() === 'month'"
+          (change)="groupingChange.emit($event)"
+        />
+        <span><strong>Month</strong><small>Group the whole calendar month</small></span>
+      </label>
+    </div>
+    <label class="settings-range">
+      <span>
+        <strong>Grid spacing</strong>
+        <small>Space between videos: {{ gridGap() }}px</small>
+      </span>
+      <input
+        type="range"
+        min="2"
+        max="10"
+        step="1"
+        [value]="gridGap()"
+        (input)="gridGapChange.emit($event)"
+        aria-label="Grid spacing in pixels"
+      />
+    </label>
+  </section>
+</div>
