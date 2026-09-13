@@ -177,8 +177,13 @@ Install dependencies and start the API and Angular development server:
 
 ```bash
 npm install
+cp .env.example .env
 npm start
 ```
+
+Edit `.env` before starting if you want to use a NAS. Set `VIDEO_SOURCE=nas`,
+uncomment and update the `NAS_MOUNT_*` values, and keep `NAS_VIDEO_ROOT` equal
+to the local mount path.
 
 Open:
 
