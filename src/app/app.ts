@@ -22,6 +22,7 @@ import { VideoCardPreviewEvent } from './components/video-card/video-card';
 import { VideoViewerComponent } from './components/video-viewer/video-viewer';
 
 type RescanProgress = {
+  mode?: 'scan' | 'reindex' | null;
   processed: number;
   total: number;
   errors: number;
@@ -229,9 +230,10 @@ export class App implements OnInit {
       stopped: status.stopped,
     });
     const remaining = this.formatRemainingTime(status.estimatedRemainingMs);
+    const operation = status.mode === 'reindex' ? 'Reindexing' : 'Scanning';
     this.rescanMessage.set(
       status.total
-        ? `${status.processed} of ${status.total} processed${remaining ? ` · ${remaining}` : ''}${status.errors ? ` · ${status.errors} skipped` : ''}${status.currentFile ? ` · ${status.currentFile} (${status.currentPhase})` : ''}`
+        ? `${operation} ${status.processed} of ${status.total}${remaining ? ` · ${remaining}` : ''}${status.errors ? ` · ${status.errors} skipped` : ''}${status.currentFile ? ` · ${status.currentFile} (${status.currentPhase})` : ''}`
         : 'Scanning library metadata…',
     );
   }

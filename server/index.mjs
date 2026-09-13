@@ -63,6 +63,11 @@ const watchIntervalMs = Number.isFinite(configuredWatchInterval)
   ? Math.max(1_000, configuredWatchInterval)
   : 60_000;
 const exiftoolPath = path.resolve(root, 'node_modules', 'exiftool-vendored.pl', 'bin', 'exiftool');
+// Without -fast, ExifTool scans for trailers and ends up streaming whole video files across the
+// network. -fast yields byte-identical tags for every format here; -fast2 drops QuickTime metadata
+// entirely, so it must not be used.
+const exiftoolSpeedArgs =
+  (process.env.EXIFTOOL_FAST ?? 'true').trim().toLowerCase() === 'false' ? [] : ['-fast'];
 const database = new CatalogDatabase(databasePath);
 const monthFormatter = new Intl.DateTimeFormat('en', { month: 'long', timeZone: 'UTC' });
 let catalog = database.listVideos().map(recordFromDatabase);
@@ -71,6 +76,7 @@ let catalogVersion = 0;
 let lastScan = null;
 let scanStatus = {
   active: false,
+  mode: null,
   processed: 0,
   total: 0,
   estimatedRemainingMs: null,
@@ -86,6 +92,8 @@ let stopScanRequested = false;
 let pendingPaths = new Set();
 let scanTimer;
 let terminalProgressDrawn = false;
+let lastTerminalDrawMs = 0;
+const maxRetainedErrorDetails = 200;
 
 class ExifToolWorker {
   child;
@@ -162,6 +170,7 @@ class ExifToolWorker {
       this.child.stdin.write(
         [
           '-json',
+          ...exiftoolSpeedArgs,
           '-ImageWidth',
           '-ImageHeight',
           '-Rotation',
@@ -370,32 +379,35 @@ async function createFallbackSidecar(file, stat, mediaMetadata) {
   const metadata = await fallbackSidecarMetadata(file, stat, mediaMetadata);
   try {
     await fs.writeFile(sidecar, `${JSON.stringify(metadata, null, 2)}\n`, { flag: 'wx' });
-    return { metadata, path: sidecar };
+    return { metadata, path: sidecar, written: true };
   } catch (error) {
     if (error.code !== 'EEXIST') {
     }
-    return { metadata, path: null };
+    return { metadata, path: null, written: false };
   }
 }
 
 async function readSidecar(file, stat, mediaMetadata) {
   for (const sidecar of sidecarCandidates(file)) {
     try {
-      const metadata = JSON.parse(await fs.readFile(sidecar, 'utf8'));
+      const raw = await fs.readFile(sidecar, 'utf8');
+      const metadata = JSON.parse(raw);
       if (isGeneratedFallbackMetadata(file, metadata) && mediaMetadata.captureDateMs) {
         const corrected = await fallbackSidecarMetadata(file, stat, mediaMetadata);
-        await fs.writeFile(sidecar, `${JSON.stringify(corrected, null, 2)}\n`);
-        return { metadata: corrected, path: sidecar };
+        const serialized = `${JSON.stringify(corrected, null, 2)}\n`;
+        // Rewriting an identical sidecar costs an NFS write and bumps mtime, which invalidates
+        // the file signature and forces the next scan to redo the work.
+        if (serialized === raw) return { metadata: corrected, path: sidecar, written: false };
+        await fs.writeFile(sidecar, serialized);
+        return { metadata: corrected, path: sidecar, written: true };
       }
-      return {
-        metadata,
-        path: sidecar,
-      };
+      return { metadata, path: sidecar, written: false };
     } catch (error) {
       if (error.code !== 'ENOENT')
         return {
           metadata: { metadataWarning: 'Unable to parse supplemental metadata' },
           path: sidecar,
+          written: false,
         };
     }
   }
@@ -521,10 +533,14 @@ async function readRecord(file, onPhase = () => {}, force = false, precomputed =
     const mediaMetadata = await readMediaMetadata(file);
     phase = 'sidecar';
     onPhase(phase);
-    const { metadata, path: sidecar } = await readSidecar(file, stat, mediaMetadata);
+    const { metadata, path: sidecar, written } = await readSidecar(file, stat, mediaMetadata);
     phase = 'database';
     onPhase(phase);
-    const sidecarStat = sidecar ? await fs.stat(sidecar).catch(() => null) : null;
+    // An untouched sidecar still has the stat the pre-scan pass took, so skip a second lookup.
+    const reusableSidecarStat =
+      !written && sidecar && precomputed?.sidecarPath === sidecar ? precomputed.sidecarStat : null;
+    const sidecarStat =
+      reusableSidecarStat ?? (sidecar ? await fs.stat(sidecar).catch(() => null) : null);
     database.upsertVideo({
       ...recordFromMetadata(file, metadata, stat, mediaMetadata),
       fileSignature: fileSignature(stat, sidecarStat),
@@ -549,6 +565,9 @@ function rebuildCatalog() {
 
 function updateScanTerminal(status, done = false) {
   if (!status.total) return;
+  const now = Date.now();
+  if (!done && now - lastTerminalDrawMs < 100) return;
+  lastTerminalDrawMs = now;
   const suffix = status.currentFile ? ` ${status.currentFile} (${status.currentPhase})` : '';
   const remaining = status.estimatedRemainingMs
     ? `, about ${Math.ceil(status.estimatedRemainingMs / 1000)}s remaining`
@@ -595,6 +614,7 @@ async function scanLibrary(changedPaths = null, force = false, contexts = null) 
   }
   scanStatus = {
     active: true,
+    mode: force ? 'reindex' : 'scan',
     processed: 0,
     total: 0,
     estimatedRemainingMs: null,
@@ -651,7 +671,11 @@ async function scanLibrary(changedPaths = null, force = false, contexts = null) 
           scanStatus = {
             ...scanStatus,
             errors: scanStatus.errors + 1,
-            errorDetails: [...scanStatus.errorDetails, detail],
+            // Keeping every detail turns the status object into an O(n^2) copy and bloats polling.
+            errorDetails:
+              scanStatus.errorDetails.length < maxRetainedErrorDetails
+                ? [...scanStatus.errorDetails, detail]
+                : scanStatus.errorDetails,
           };
         }
         updateScanTerminal(scanStatus);
@@ -661,7 +685,7 @@ async function scanLibrary(changedPaths = null, force = false, contexts = null) 
       Array.from({ length: Math.min(scanConcurrency, mediaFiles.length) }, processNext),
     );
     if (!stopScanRequested && !changedPaths) {
-      database.removeMissingVideoPaths(mediaFiles.map(toRelativePath));
+      pruneMissingVideos(mediaFiles);
     }
     rebuildCatalog();
     scanStatus = {
@@ -700,13 +724,26 @@ async function findFilesNeedingScan() {
     const existing = indexed.get(relativePath);
     const stat = await fs.stat(file).catch(() => null);
     if (!stat) return;
-    const { stat: sidecarStat } = await firstExistingSidecarStat(file, knownFiles);
+    const { stat: sidecarStat, path: sidecarPath } = await firstExistingSidecarStat(
+      file,
+      knownFiles,
+    );
     const signature = fileSignature(stat, sidecarStat);
     if (existing && existing.file_signature === signature && existing.width && existing.height)
       return;
-    contexts.set(file, { stat, signature, stale: true, knownFiles });
+    contexts.set(file, { stat, signature, stale: true, knownFiles, sidecarPath, sidecarStat });
   });
-  return { files: [...contexts.keys()], contexts };
+  return { files: [...contexts.keys()], contexts, mediaFiles };
+}
+
+// Guarded so an unmounted or unreachable share can never wipe the catalog.
+function pruneMissingVideos(mediaFiles) {
+  if (!mediaFiles.length) return 0;
+  const before = database.listSignatures().length;
+  database.removeMissingVideoPaths(mediaFiles.map(toRelativePath));
+  const removed = before - database.listSignatures().length;
+  if (removed > 0) console.log(`Removed ${removed} catalog entries whose files no longer exist`);
+  return removed;
 }
 
 function queueChangedPath(file) {
@@ -997,9 +1034,11 @@ const server = createServer(async (request, response) => {
       return json(response, 200, { ok: true });
     }
     if (url.pathname === '/api/scan' && request.method === 'POST') {
-      void findFilesNeedingScan().then(({ files, contexts }) =>
-        scanLibrary(files, false, contexts),
-      );
+      void findFilesNeedingScan().then(({ files, contexts, mediaFiles }) => {
+        // Surface deletions immediately rather than making the user wait out the metadata pass.
+        if (pruneMissingVideos(mediaFiles)) rebuildCatalog();
+        return scanLibrary(files, false, contexts);
+      });
       return json(response, 202, { started: true, mode: 'scan' });
     }
     if (url.pathname === '/api/scan-stop' && request.method === 'POST') {
