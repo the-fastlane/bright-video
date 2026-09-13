@@ -137,11 +137,35 @@ The application also reads media metadata through ExifTool. Files without supple
 
 The container supports these environment variables:
 
-| Variable        | Default                         | Purpose                        |
-| --------------- | ------------------------------- | ------------------------------ |
-| `PORT`          | `3000`                          | HTTP port inside the container |
-| `VIDEO_ROOT`    | `/data/videos`                  | Mounted video library          |
-| `DATABASE_PATH` | `/data/catalog/bright-video.db` | SQLite catalog file            |
+| Variable            | Default                         | Purpose                           |
+| ------------------- | ------------------------------- | --------------------------------- |
+| `PORT`              | `3000`                          | HTTP port inside the container    |
+| `VIDEO_ROOT`        | `/data/videos`                  | Mounted video library             |
+| `VIDEO_SOURCE`      | `local`                         | Select `local` or `nas` media     |
+| `NAS_VIDEO_ROOT`    | `/mnt/synology_nfs_share`       | Host-mounted Synology NFS path    |
+| `NAS_MOUNT_SOURCE`  |                                 | NFS server and export             |
+| `NAS_MOUNT_PATH`    |                                 | Local NFS mount path              |
+| `NAS_MOUNT_OPTIONS` |                                 | Comma-separated NFS mount options |
+| `SCAN_CONCURRENCY`  | `4`                             | Concurrent metadata scan workers  |
+| `DATABASE_PATH`     | `/data/catalog/bright-video.db` | SQLite catalog file               |
+
+For a host-mounted Synology NFS share, mount the share on the machine running
+BrightVideo first, then set `VIDEO_SOURCE=nas` and point `NAS_VIDEO_ROOT` at
+that mount. The application reads and streams files from the mount directly;
+it does not mount NFS itself. The existing `/videos/...` endpoint supports
+HTTP byte ranges, so browser seeking and partial playback continue to work.
+
+When `VIDEO_SOURCE=nas`, `npm start` first unmounts `NAS_MOUNT_PATH` if it is
+already mounted, then mounts `NAS_MOUNT_SOURCE` using `NAS_MOUNT_OPTIONS`.
+macOS may prompt for your administrator password in the terminal. The API and
+Angular development server start only after the mount succeeds. When
+`VIDEO_SOURCE=local`, this mount step is skipped.
+
+`SCAN_CONCURRENCY` controls how many different video files can be indexed at
+once. It can improve NFS catalog scan throughput, but it does not split one
+video stream across multiple TCP connections. Single-file pNFS or NFS
+multipathing requires support from both the Synology server and the macOS NFS
+client and cannot be enabled by this Node application.
 
 If you change the internal `PORT`, update the container port mapping and application URL accordingly.
 

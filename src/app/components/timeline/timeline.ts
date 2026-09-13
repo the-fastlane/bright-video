@@ -258,7 +258,7 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
         }
         this.loadedVideoIdsChange.emit(nextIds);
       },
-      { rootMargin: '0px', threshold: 0.01 },
+      { rootMargin: '300px 0px', threshold: 0 },
     );
     for (const card of this.videoCards) {
       if (card.mediaFrame) this.videoObserver.observe(card.mediaFrame.nativeElement);

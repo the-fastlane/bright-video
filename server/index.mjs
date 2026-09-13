@@ -9,7 +9,15 @@ import { CatalogDatabase } from './catalog-db.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const staticRoot = path.join(root, 'dist', 'bright-video', 'browser');
-const videoRoot = path.resolve(process.env.VIDEO_ROOT ?? path.join(root, 'videos'));
+const videoSource = (process.env.VIDEO_SOURCE ?? 'local').trim().toLowerCase();
+const configuredVideoRoot =
+  videoSource === 'nas'
+    ? (process.env.NAS_VIDEO_ROOT ?? '/mnt/synology_nfs_share')
+    : (process.env.VIDEO_ROOT ?? path.join(root, 'videos'));
+if (videoSource !== 'local' && videoSource !== 'nas') {
+  throw new Error(`VIDEO_SOURCE must be either "local" or "nas", received "${videoSource}"`);
+}
+const videoRoot = path.resolve(configuredVideoRoot);
 const databasePath = path.resolve(
   process.env.DATABASE_PATH ?? path.join(root, 'data', 'bright-video.db'),
 );
@@ -17,7 +25,10 @@ const port = Number(process.env.PORT ?? 3000);
 const mediaExtensions = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv']);
 const sidecarSuffix = '.supplemental-metadata.json';
 const metadataSignatureVersion = 'rotation-v2';
-const scanConcurrency = 1;
+const configuredScanConcurrency = Number(process.env.SCAN_CONCURRENCY ?? 4);
+const scanConcurrency = Number.isInteger(configuredScanConcurrency)
+  ? Math.max(1, configuredScanConcurrency)
+  : 4;
 const scanFileTimeoutMs = 1_000;
 const exiftoolPath = path.resolve(root, 'node_modules', 'exiftool-vendored.pl', 'bin', 'exiftool');
 const database = new CatalogDatabase(databasePath);
