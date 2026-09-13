@@ -5,6 +5,7 @@ import path from 'node:path';
 import { clearLine, cursorTo, moveCursor } from 'node:readline';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
 import chokidar from 'chokidar';
 import { CatalogDatabase } from './catalog-db.mjs';
 
@@ -34,10 +35,39 @@ const configuredExifToolConcurrency = Number(process.env.EXIFTOOL_CONCURRENCY ??
 const exifToolConcurrency = Number.isInteger(configuredExifToolConcurrency)
   ? Math.max(1, Math.min(scanConcurrency, configuredExifToolConcurrency))
   : Math.min(scanConcurrency, 4);
-const scanFileTimeoutMs = 1_000;
+// A NAS read of a large moov atom regularly exceeds a second; too short a timeout means the
+// file is never persisted and gets retried on every future scan.
+const configuredScanFileTimeout = Number(
+  process.env.SCAN_FILE_TIMEOUT_MS ?? (videoSource === 'nas' ? 5_000 : 1_000),
+);
+const scanFileTimeoutMs = Number.isFinite(configuredScanFileTimeout)
+  ? Math.max(500, configuredScanFileTimeout)
+  : 5_000;
+// Network filesystems pay a round trip per stat, so fan them out far wider than CPU work.
+const configuredStatConcurrency = Number(process.env.STAT_CONCURRENCY ?? 64);
+const statConcurrency = Number.isInteger(configuredStatConcurrency)
+  ? Math.max(1, configuredStatConcurrency)
+  : 64;
+// Matches the NFS rsize so each stream read maps onto a single network read.
+const streamChunkSize = 1 << 20;
+const openRangeChunkSize = 4 * 1024 * 1024;
+const videoCacheMaxAgeSeconds = Number(process.env.VIDEO_CACHE_MAX_AGE ?? 86_400);
+const statCacheTtlMs = Number(process.env.STAT_CACHE_TTL_MS ?? 60_000);
+const statCacheMaxEntries = 20_000;
+const watchEnabled = (process.env.WATCH_ENABLED ?? 'true').trim().toLowerCase() !== 'false';
+// Polling every second across a NAS library floods it with stat calls and starves streaming.
+const configuredWatchInterval = Number(
+  process.env.WATCH_INTERVAL_MS ?? (videoSource === 'nas' ? 60_000 : 1_000),
+);
+const watchIntervalMs = Number.isFinite(configuredWatchInterval)
+  ? Math.max(1_000, configuredWatchInterval)
+  : 60_000;
 const exiftoolPath = path.resolve(root, 'node_modules', 'exiftool-vendored.pl', 'bin', 'exiftool');
 const database = new CatalogDatabase(databasePath);
+const monthFormatter = new Intl.DateTimeFormat('en', { month: 'long', timeZone: 'UTC' });
 let catalog = database.listVideos().map(recordFromDatabase);
+let catalogPayload = null;
+let catalogVersion = 0;
 let lastScan = null;
 let scanStatus = {
   active: false,
@@ -373,14 +403,41 @@ async function readSidecar(file, stat, mediaMetadata) {
 }
 
 async function walk(directory) {
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  const children = await Promise.all(
-    entries.map(async (entry) => {
-      const fullPath = path.join(directory, entry.name);
-      return entry.isDirectory() ? walk(fullPath) : fullPath;
-    }),
-  );
-  return children.flat();
+  const entries = await fs.readdir(directory, { withFileTypes: true, recursive: true });
+  const files = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    files.push(path.join(entry.parentPath ?? entry.path ?? directory, entry.name));
+  }
+  return files;
+}
+
+async function mapConcurrent(items, limit, worker) {
+  let index = 0;
+  const run = async () => {
+    while (index < items.length) {
+      const current = index++;
+      await worker(items[current], current);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+}
+
+function toRelativePath(file) {
+  return path.relative(videoRoot, file).split(path.sep).join('/');
+}
+
+function fileSignature(stat, sidecarStat) {
+  return `${metadataSignatureVersion}:${stat.size}:${stat.mtimeMs}:${sidecarStat?.size ?? 0}:${sidecarStat?.mtimeMs ?? 0}`;
+}
+
+async function firstExistingSidecarStat(file, knownFiles) {
+  for (const candidate of sidecarCandidates(file)) {
+    if (knownFiles && !knownFiles.has(candidate)) continue;
+    const stat = await fs.stat(candidate).catch(() => null);
+    if (stat) return { stat, path: candidate };
+  }
+  return { stat: null, path: null };
 }
 
 function parseTimestamp(value) {
@@ -391,7 +448,7 @@ function parseTimestamp(value) {
 }
 
 function recordFromMetadata(file, metadata, stat, mediaMetadata) {
-  const relativePath = path.relative(videoRoot, file).split(path.sep).join('/');
+  const relativePath = toRelativePath(file);
   const captureDate =
     parseTimestamp(metadata.photoTakenTime?.timestamp ?? metadata.creationTime?.timestamp) ??
     (mediaMetadata.captureDateMs ? new Date(mediaMetadata.captureDateMs).toISOString() : null);
@@ -403,11 +460,7 @@ function recordFromMetadata(file, metadata, stat, mediaMetadata) {
     url: `/videos/${relativePath.split('/').map(encodeURIComponent).join('/')}`,
     captureDate,
     year: captureDate ? new Date(captureDate).getUTCFullYear() : null,
-    month: captureDate
-      ? new Intl.DateTimeFormat('en', { month: 'long', timeZone: 'UTC' }).format(
-          new Date(captureDate),
-        )
-      : 'Undated',
+    month: captureDate ? monthFormatter.format(new Date(captureDate)) : 'Undated',
     monthKey: captureDate ? captureDate.slice(0, 7) : 'undated',
     description: metadata.description ?? '',
     format: path.extname(file).slice(1).toUpperCase(),
@@ -434,11 +487,7 @@ function recordFromDatabase(row) {
     url: `/videos/${row.file_path.split('/').map(encodeURIComponent).join('/')}`,
     captureDate,
     year: captureDate ? new Date(captureDate).getUTCFullYear() : null,
-    month: captureDate
-      ? new Intl.DateTimeFormat('en', { month: 'long', timeZone: 'UTC' }).format(
-          new Date(captureDate),
-        )
-      : 'Undated',
+    month: captureDate ? monthFormatter.format(new Date(captureDate)) : 'Undated',
     monthKey: captureDate ? captureDate.slice(0, 7) : 'undated',
     description: row.description,
     format: row.format,
@@ -451,22 +500,22 @@ function recordFromDatabase(row) {
   };
 }
 
-async function readRecord(file, onPhase = () => {}, force = false) {
+async function readRecord(file, onPhase = () => {}, force = false, precomputed = null) {
   let phase = 'filesystem';
   onPhase(phase);
   try {
-    const stat = await fs.stat(file);
-    let sidecarStat = null;
-    for (const candidate of sidecarCandidates(file)) {
-      sidecarStat = await fs.stat(candidate).catch(() => null);
-      if (sidecarStat) break;
-    }
-    const signature = `${metadataSignatureVersion}:${stat.size}:${stat.mtimeMs}:${sidecarStat?.size ?? 0}:${sidecarStat?.mtimeMs ?? 0}`;
+    // The pre-scan pass already paid for these stats; reuse them instead of hitting the NAS twice.
+    const stat = precomputed?.stat ?? (await fs.stat(file));
+    const signature =
+      precomputed?.signature ??
+      fileSignature(stat, (await firstExistingSidecarStat(file, precomputed?.knownFiles)).stat);
     phase = 'database';
     onPhase(phase);
-    const existing = database.getVideo(path.relative(videoRoot, file).split(path.sep).join('/'));
-    if (!force && existing?.file_signature === signature && existing.width && existing.height)
-      return { ok: true };
+    if (!precomputed?.stale) {
+      const existing = database.getVideo(toRelativePath(file));
+      if (!force && existing?.file_signature === signature && existing.width && existing.height)
+        return { ok: true };
+    }
     phase = 'metadata';
     onPhase(phase);
     const mediaMetadata = await readMediaMetadata(file);
@@ -475,17 +524,14 @@ async function readRecord(file, onPhase = () => {}, force = false) {
     const { metadata, path: sidecar } = await readSidecar(file, stat, mediaMetadata);
     phase = 'database';
     onPhase(phase);
-    sidecarStat = sidecar ? await fs.stat(sidecar).catch(() => null) : null;
-    const finalSignature = `${metadataSignatureVersion}:${stat.size}:${stat.mtimeMs}:${sidecarStat?.size ?? 0}:${sidecarStat?.mtimeMs ?? 0}`;
+    const sidecarStat = sidecar ? await fs.stat(sidecar).catch(() => null) : null;
     database.upsertVideo({
       ...recordFromMetadata(file, metadata, stat, mediaMetadata),
-      fileSignature: finalSignature,
+      fileSignature: fileSignature(stat, sidecarStat),
     });
     return { ok: true };
   } catch (error) {
-    if (error.code === 'ENOENT') {
-      database.removeVideo(path.relative(videoRoot, file).split(path.sep).join('/'));
-    }
+    if (error.code === 'ENOENT') database.removeVideo(toRelativePath(file));
     return {
       ok: false,
       phase,
@@ -494,12 +540,10 @@ async function readRecord(file, onPhase = () => {}, force = false) {
   }
 }
 
-async function readRecordWithTimeout(file, onPhase, force = false) {
-  return readRecord(file, onPhase, force);
-}
-
 function rebuildCatalog() {
   catalog = database.listVideos().map(recordFromDatabase);
+  catalogPayload = null;
+  catalogVersion += 1;
   lastScan = new Date().toISOString();
 }
 
@@ -544,7 +588,7 @@ function estimatedRemainingMs(status) {
   );
 }
 
-async function scanLibrary(changedPaths = null, force = false) {
+async function scanLibrary(changedPaths = null, force = false, contexts = null) {
   if (scanInFlight) {
     if (changedPaths) changedPaths.forEach((file) => pendingPaths.add(file));
     return scanInFlight;
@@ -582,12 +626,13 @@ async function scanLibrary(changedPaths = null, force = false) {
           currentFile: path.relative(videoRoot, file),
           currentPhase: 'filesystem',
         };
-        const result = await readRecordWithTimeout(
+        const result = await readRecord(
           file,
           (phase) => {
             scanStatus = { ...scanStatus, currentPhase: phase };
           },
           force,
+          contexts?.get(file) ?? null,
         );
         scanStatus = {
           ...scanStatus,
@@ -616,10 +661,7 @@ async function scanLibrary(changedPaths = null, force = false) {
       Array.from({ length: Math.min(scanConcurrency, mediaFiles.length) }, processNext),
     );
     if (!stopScanRequested && !changedPaths) {
-      const currentFiles = new Set(mediaFiles);
-      database.removeMissingVideoPaths(
-        [...currentFiles].map((file) => path.relative(videoRoot, file).split(path.sep).join('/')),
-      );
+      database.removeMissingVideoPaths(mediaFiles.map(toRelativePath));
     }
     rebuildCatalog();
     scanStatus = {
@@ -648,22 +690,23 @@ async function scanLibrary(changedPaths = null, force = false) {
 }
 
 async function findFilesNeedingScan() {
-  const files = (await walk(videoRoot)).filter(isVideo);
-  const pending = [];
-  for (const file of files) {
-    const stat = await fs.stat(file);
-    let sidecarStat = null;
-    for (const candidate of sidecarCandidates(file)) {
-      sidecarStat = await fs.stat(candidate).catch(() => null);
-      if (sidecarStat) break;
-    }
-    const signature = `${metadataSignatureVersion}:${stat.size}:${stat.mtimeMs}:${sidecarStat?.size ?? 0}:${sidecarStat?.mtimeMs ?? 0}`;
-    const relativePath = path.relative(videoRoot, file).split(path.sep).join('/');
-    const existing = database.getVideo(relativePath);
-    if (!existing || existing.file_signature !== signature || !existing.width || !existing.height)
-      pending.push(file);
-  }
-  return pending;
+  const allFiles = await walk(videoRoot);
+  const knownFiles = new Set(allFiles);
+  const mediaFiles = allFiles.filter(isVideo);
+  const indexed = new Map(database.listSignatures().map((row) => [row.file_path, row]));
+  const contexts = new Map();
+  await mapConcurrent(mediaFiles, statConcurrency, async (file) => {
+    const relativePath = toRelativePath(file);
+    const existing = indexed.get(relativePath);
+    const stat = await fs.stat(file).catch(() => null);
+    if (!stat) return;
+    const { stat: sidecarStat } = await firstExistingSidecarStat(file, knownFiles);
+    const signature = fileSignature(stat, sidecarStat);
+    if (existing && existing.file_signature === signature && existing.width && existing.height)
+      return;
+    contexts.set(file, { stat, signature, stale: true, knownFiles });
+  });
+  return { files: [...contexts.keys()], contexts };
 }
 
 function queueChangedPath(file) {
@@ -678,17 +721,26 @@ function queueChangedPath(file) {
 }
 
 function startWatcher() {
+  if (!watchEnabled) {
+    console.log('Watcher disabled; use the Scan action to pick up changes');
+    return null;
+  }
   const watcher = chokidar.watch(videoRoot, {
     ignoreInitial: true,
     persistent: true,
-    usePolling: true,
-    interval: 1_000,
-    awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
+    // Network mounts do not deliver native events, but polling must stay slow enough
+    // that it never competes with playback reads.
+    usePolling: videoSource === 'nas',
+    interval: watchIntervalMs,
+    binaryInterval: watchIntervalMs,
+    awaitWriteFinish: { stabilityThreshold: 2_000, pollInterval: 500 },
     ignored: (file) => file !== videoRoot && file.includes(`${path.sep}.`),
   });
   watcher.on('add', queueChangedPath).on('change', queueChangedPath).on('unlink', queueChangedPath);
   watcher.on('error', (error) => console.error('Video watcher error:', error));
-  console.log(`Watching ${videoRoot} for new and changed videos`);
+  console.log(
+    `Watching ${videoRoot} for new and changed videos (${videoSource === 'nas' ? `polling every ${Math.round(watchIntervalMs / 1000)}s` : 'native events'})`,
+  );
   return watcher;
 }
 
@@ -698,6 +750,45 @@ function json(response, status, body) {
     'cache-control': 'no-store',
   });
   response.end(JSON.stringify(body));
+}
+
+function acceptsGzip(request) {
+  return /\bgzip\b/.test(request.headers['accept-encoding'] ?? '');
+}
+
+// The unfiltered catalog is identical for every client and only changes on rescan,
+// so serialize and compress it once per catalog version.
+function catalogResponse() {
+  if (!catalogPayload) {
+    const body = Buffer.from(JSON.stringify({ videos: catalog }));
+    catalogPayload = {
+      body,
+      gzipped: gzipSync(body, { level: 6 }),
+      etag: `"catalog-${catalogVersion}-${body.length.toString(36)}"`,
+    };
+  }
+  return catalogPayload;
+}
+
+function sendCatalog(request, response) {
+  const payload = catalogResponse();
+  const headers = {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-cache',
+    etag: payload.etag,
+    vary: 'accept-encoding',
+  };
+  if (request.headers['if-none-match'] === payload.etag) {
+    response.writeHead(304, headers);
+    return response.end();
+  }
+  const compressed = acceptsGzip(request);
+  const body = compressed ? payload.gzipped : payload.body;
+  if (compressed) headers['content-encoding'] = 'gzip';
+  headers['content-length'] = body.length;
+  response.writeHead(200, headers);
+  if (request.method === 'HEAD') return response.end();
+  response.end(body);
 }
 
 function albumNameTaken(name, excludeId = null) {
@@ -715,42 +806,94 @@ async function requestBody(request) {
   return body ? JSON.parse(body) : {};
 }
 
+const videoStatCache = new Map();
+
+async function cachedVideoStat(file) {
+  const cached = videoStatCache.get(file);
+  if (cached && cached.expires > Date.now()) return cached.stat;
+  const stat = await fs.stat(file);
+  if (videoStatCache.size >= statCacheMaxEntries) videoStatCache.clear();
+  videoStatCache.set(file, { stat, expires: Date.now() + statCacheTtlMs });
+  return stat;
+}
+
+const videoContentTypes = {
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mkv': 'video/x-matroska',
+  '.avi': 'video/x-msvideo',
+};
+
+function isClientAbort(error) {
+  return (
+    error?.code === 'ERR_STREAM_PREMATURE_CLOSE' ||
+    error?.code === 'ECONNRESET' ||
+    error?.code === 'EPIPE'
+  );
+}
+
 async function serveVideo(request, response, pathname) {
   const relativePath = decodeURIComponent(pathname.slice('/videos/'.length));
   const file = path.resolve(videoRoot, relativePath);
   if (!file.startsWith(`${videoRoot}${path.sep}`))
     return json(response, 403, { error: 'Forbidden path' });
+  if (request.method !== 'GET' && request.method !== 'HEAD')
+    return json(response, 405, { error: 'Method not allowed' });
+  let stat;
   try {
-    const stat = await fs.stat(file);
+    stat = await cachedVideoStat(file);
     if (!stat.isFile()) return json(response, 404, { error: 'Not found' });
-    const extension = path.extname(file).toLowerCase();
-    const type =
-      extension === '.mp4' ? 'video/mp4' : extension === '.webm' ? 'video/webm' : 'video/quicktime';
-    const range = request.headers.range;
+  } catch {
+    return json(response, 404, { error: 'Video not found' });
+  }
+
+  const extension = path.extname(file).toLowerCase();
+  const type = videoContentTypes[extension] ?? 'video/quicktime';
+  const etag = `"${stat.size.toString(36)}-${Math.round(stat.mtimeMs).toString(36)}"`;
+  const lastModified = new Date(stat.mtimeMs).toUTCString();
+  const validators = {
+    etag,
+    'last-modified': lastModified,
+    'accept-ranges': 'bytes',
+    'cache-control': `private, max-age=${videoCacheMaxAgeSeconds}`,
+  };
+  const range = request.headers.range;
+
+  // Revalidation only applies to whole-resource requests; ranged reads must still be served.
+  if (!range && request.headers['if-none-match'] === etag) {
+    response.writeHead(304, validators);
+    return response.end();
+  }
+
+  try {
     if (!range) {
-      response.writeHead(200, {
-        'content-type': type,
-        'content-length': stat.size,
-        'accept-ranges': 'bytes',
-      });
-      await pipeline(createReadStream(file), response);
+      response.writeHead(200, { ...validators, 'content-type': type, 'content-length': stat.size });
+      if (request.method === 'HEAD') return response.end();
+      await pipeline(createReadStream(file, { highWaterMark: streamChunkSize }), response);
       return;
     }
     const match = /^bytes=(\d*)-(\d*)$/.exec(range);
     if (!match) return json(response, 416, { error: 'Invalid range' });
     const start = match[1] ? Number(match[1]) : Math.max(0, stat.size - Number(match[2] || 1));
-    const requestedEnd = match[2] ? Number(match[2]) : start + 4 * 1024 * 1024 - 1;
+    const requestedEnd = match[2] ? Number(match[2]) : start + openRangeChunkSize - 1;
     if (!Number.isInteger(start) || start < 0 || start >= stat.size)
       return json(response, 416, { error: 'Range not satisfiable' });
     const end = Math.min(requestedEnd, stat.size - 1);
     response.writeHead(206, {
+      ...validators,
       'content-type': type,
       'content-length': end - start + 1,
       'content-range': `bytes ${start}-${end}/${stat.size}`,
-      'accept-ranges': 'bytes',
     });
-    await pipeline(createReadStream(file, { start, end }), response);
-  } catch {
+    if (request.method === 'HEAD') return response.end();
+    await pipeline(
+      createReadStream(file, { start, end, highWaterMark: streamChunkSize }),
+      response,
+    );
+  } catch (error) {
+    // Browsers abort media requests constantly while scrolling; that is not an error.
+    if (isClientAbort(error)) return;
     if (!response.headersSent) json(response, 404, { error: 'Video not found' });
   }
 }
@@ -804,15 +947,14 @@ const server = createServer(async (request, response) => {
         Number.isFinite(minDuration) ||
         Number.isFinite(maxDuration) ||
         Number.isInteger(albumId);
-      const videos = hasFilters
-        ? database
-            .listVideos(query ?? '', {
-              minDurationMs: Number.isFinite(minDuration) ? minDuration : null,
-              maxDurationMs: Number.isFinite(maxDuration) ? maxDuration : null,
-              albumId: Number.isInteger(albumId) ? albumId : null,
-            })
-            .map(recordFromDatabase)
-        : catalog;
+      if (!hasFilters) return sendCatalog(request, response);
+      const videos = database
+        .listVideos(query ?? '', {
+          minDurationMs: Number.isFinite(minDuration) ? minDuration : null,
+          maxDurationMs: Number.isFinite(maxDuration) ? maxDuration : null,
+          albumId: Number.isInteger(albumId) ? albumId : null,
+        })
+        .map(recordFromDatabase);
       return json(response, 200, { videos });
     }
     if (url.pathname === '/api/albums' && request.method === 'GET')
@@ -855,7 +997,9 @@ const server = createServer(async (request, response) => {
       return json(response, 200, { ok: true });
     }
     if (url.pathname === '/api/scan' && request.method === 'POST') {
-      void findFilesNeedingScan().then((files) => scanLibrary(files));
+      void findFilesNeedingScan().then(({ files, contexts }) =>
+        scanLibrary(files, false, contexts),
+      );
       return json(response, 202, { started: true, mode: 'scan' });
     }
     if (url.pathname === '/api/scan-stop' && request.method === 'POST') {
@@ -879,4 +1023,8 @@ const server = createServer(async (request, response) => {
 });
 
 startWatcher();
+// Media playback reuses connections heavily; keep them alive longer than the browser's idle window.
+server.keepAliveTimeout = 70_000;
+server.headersTimeout = 75_000;
+server.requestTimeout = 0;
 server.listen(port, () => console.log(`Bright Video API listening on http://localhost:${port}`));

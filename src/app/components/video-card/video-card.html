@@ -16,20 +16,22 @@
     @if (loaded()) {
       <video
         [src]="video().url"
-        preload="auto"
+        preload="metadata"
         playsinline
         muted
+        disableremoteplayback
+        disablepictureinpicture
         (loadedmetadata)="durationLoaded.emit({ video: video(), event: $event })"
       ></video>
     }
     <div class="media-shade"></div>
-    <div class="album-add-control" [class.open]="menuOpen" (click)="stopCardClick($event)">
+    <div class="album-add-control" [class.open]="menuOpen()" (click)="stopCardClick($event)">
       <button
         class="album-add-button"
         type="button"
         aria-label="Add video to an album"
         title="Add to album"
-        [attr.aria-expanded]="menuOpen"
+        [attr.aria-expanded]="menuOpen()"
         (click)="toggleAlbumMenu($event)"
       >
         <span aria-hidden="true">+</span>

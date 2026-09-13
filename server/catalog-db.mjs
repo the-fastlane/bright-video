@@ -115,6 +115,15 @@ function normalizeSearch(value) {
     .join(' AND ');
 }
 
+// WAL plus relaxed fsync keeps the scan write path off the disk-sync critical path.
+const tuning = `
+  PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
+  PRAGMA temp_store = MEMORY;
+  PRAGMA cache_size = -65536;
+  PRAGMA mmap_size = 268435456;
+`;
+
 export class CatalogDatabase {
   #db;
   #upsertVideo;
@@ -125,10 +134,15 @@ export class CatalogDatabase {
   #deleteSearch;
   #insertSearch;
   #selectAlbums;
+  #selectSignatures;
+  #selectVideoPaths;
+  #insertAnalysis;
+  #insertAnalysisJob;
 
   constructor(file) {
     mkdirSync(path.dirname(file), { recursive: true });
     this.#db = new DatabaseSync(file);
+    this.#db.exec(tuning);
     this.#db.exec(schema);
     this.#upsertVideo = this.#db.prepare(`
       INSERT INTO videos (
@@ -154,6 +168,7 @@ export class CatalogDatabase {
         metadata_source = excluded.metadata_source,
         metadata_updated_at = excluded.metadata_updated_at,
         file_signature = excluded.file_signature
+      RETURNING id
     `);
     this.#deleteVideo = this.#db.prepare('DELETE FROM videos WHERE file_path = ?');
     this.#selectVideo = this.#db.prepare('SELECT * FROM videos WHERE file_path = ?');
@@ -174,10 +189,24 @@ export class CatalogDatabase {
     this.#selectAlbums = this.#db.prepare(
       'SELECT id, name, description, display_order, created_at, updated_at FROM albums ORDER BY display_order, id',
     );
+    this.#selectSignatures = this.#db.prepare(
+      'SELECT file_path, file_signature, width, height FROM videos',
+    );
+    this.#selectVideoPaths = this.#db.prepare('SELECT file_path FROM videos');
+    this.#insertAnalysis = this.#db.prepare(`
+      INSERT INTO video_analysis (video_id, status)
+      VALUES (?, 'pending')
+      ON CONFLICT(video_id) DO NOTHING
+    `);
+    this.#insertAnalysisJob = this.#db.prepare(`
+      INSERT INTO analysis_jobs (video_id, available_at)
+      VALUES (?, ?)
+      ON CONFLICT(video_id) DO NOTHING
+    `);
   }
 
   upsertVideo(video) {
-    const result = this.#upsertVideo.run(
+    const row = this.#upsertVideo.get(
       video.path,
       video.filename,
       video.title,
@@ -197,35 +226,38 @@ export class CatalogDatabase {
       now(),
       video.fileSignature,
     );
-    const row = this.#selectVideo.get(video.path);
+    const timestamp = now();
     this.#deleteSearch.run(row.id);
     this.#insertSearch.run(row.id, `${video.title} ${video.filename}`, video.description, '', '');
-    this.#db
-      .prepare(
-        `
-      INSERT INTO video_analysis (video_id, status)
-      VALUES (?, 'pending')
-      ON CONFLICT(video_id) DO NOTHING
-    `,
-      )
-      .run(row.id);
-    this.#db
-      .prepare(
-        `
-      INSERT INTO analysis_jobs (video_id, available_at)
-      VALUES (?, ?)
-      ON CONFLICT(video_id) DO NOTHING
-    `,
-      )
-      .run(row.id, now());
-    return { id: row.id, changed: result.changes > 0 };
+    this.#insertAnalysis.run(row.id);
+    this.#insertAnalysisJob.run(row.id, timestamp);
+    return { id: row.id };
+  }
+
+  listSignatures() {
+    return this.#selectSignatures.all();
+  }
+
+  transaction(run) {
+    this.#db.exec('BEGIN');
+    try {
+      const result = run();
+      this.#db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.#db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   removeMissingVideoPaths(paths) {
     const existing = new Set(paths);
-    for (const row of this.#db.prepare('SELECT file_path FROM videos').all()) {
-      if (!existing.has(row.file_path)) this.#deleteVideo.run(row.file_path);
-    }
+    const stale = this.#selectVideoPaths
+      .all()
+      .filter((row) => !existing.has(row.file_path))
+      .map((row) => row.file_path);
+    if (!stale.length) return;
+    this.transaction(() => stale.forEach((filePath) => this.#deleteVideo.run(filePath)));
   }
 
   clearVideos() {

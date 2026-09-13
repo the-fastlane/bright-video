@@ -1,5 +1,13 @@
 import { CommonModule } from '@angular/common';
-import { Component, DestroyRef, HostListener, OnInit, inject, signal } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  HostListener,
+  OnInit,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
 import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
@@ -394,21 +402,21 @@ export class App implements OnInit {
     }
   }
 
-  protected get hasDateFilter(): boolean {
-    return Boolean(
+  protected readonly hasDateFilter = computed(() =>
+    Boolean(
       this.dateRangeStart() ||
       this.dateRangeEnd() ||
       this.selectedDay() ||
       this.durationMinSeconds() ||
       this.durationMaxSeconds(),
-    );
-  }
+    ),
+  );
 
-  protected get dateFilterSummary(): string {
+  protected readonly dateFilterSummary = computed(() => {
     const start = this.dateRangeStart();
     const end = this.dateRangeEnd();
     const day = this.selectedDay();
-    const dateSummary = day
+    return day
       ? `${this.formatFilterDay(day)} across all years`
       : start && end
         ? `${this.formatFilterDate(start)} - ${this.formatFilterDate(end)}`
@@ -417,49 +425,32 @@ export class App implements OnInit {
           : end
             ? `Through ${this.formatFilterDate(end)}`
             : '';
-    return dateSummary;
-  }
+  });
 
-  protected get filteredVideos(): VideoRecord[] {
+  // Duration filtering is already applied by the API, so this deliberately does not depend on
+  // videoDurations(): letting metadata loads invalidate it would regroup the catalog while scrolling.
+  protected readonly filteredVideos = computed(() => {
     const start = this.dateRangeStart();
     const end = this.dateRangeEnd();
     const day = this.selectedDay();
-    const minimumDuration = Number(this.durationMinSeconds());
-    const maximumDuration = Number(this.durationMaxSeconds());
+    const minimumMs = Number(this.durationMinSeconds()) * 1000;
+    const maximumMs = Number(this.durationMaxSeconds()) * 1000;
+    const hasMinimum = Boolean(this.durationMinSeconds());
+    const hasMaximum = Boolean(this.durationMaxSeconds());
     return this.videos().filter((video) => {
-      const loadedDurationMs = this.videoDurations().get(video.id);
-      const durationMs =
-        loadedDurationMs !== undefined ? loadedDurationMs * 1000 : video.durationMs;
       const date = this.videoDateKey(video.captureDate);
       if (!date) return false;
       if (day && date.slice(5) !== day) return false;
       if (start && date < start) return false;
       if (end && date > end) return false;
-      if (this.durationMinSeconds() && (durationMs === null || durationMs === undefined)) {
-        return false;
-      }
-      if (
-        this.durationMinSeconds() &&
-        durationMs !== null &&
-        durationMs !== undefined &&
-        durationMs < minimumDuration * 1000
-      ) {
-        return false;
-      }
-      if (this.durationMaxSeconds() && (durationMs === null || durationMs === undefined)) {
-        return false;
-      }
-      if (
-        this.durationMaxSeconds() &&
-        durationMs !== null &&
-        durationMs !== undefined &&
-        durationMs > maximumDuration * 1000
-      ) {
-        return false;
-      }
+      if (!hasMinimum && !hasMaximum) return true;
+      const durationMs = video.durationMs;
+      if (durationMs === null || durationMs === undefined) return false;
+      if (hasMinimum && durationMs < minimumMs) return false;
+      if (hasMaximum && durationMs > maximumMs) return false;
       return true;
     });
-  }
+  });
 
   protected setDateRangeStart(event: Event): void {
     const value = (event.target as HTMLInputElement).value;
@@ -551,11 +542,13 @@ export class App implements OnInit {
     localStorage.setItem(this.gridGapStorageKey, String(value));
   }
 
-  protected get groupedVideos(): VideoGroup[] {
+  protected readonly groupedVideos = computed<VideoGroup[]>(() => {
     const groups = new Map<string, VideoRecord[]>();
-    for (const video of this.filteredVideos) {
+    for (const video of this.filteredVideos()) {
       const groupKey = this.groupKey(video);
-      groups.set(groupKey, [...(groups.get(groupKey) ?? []), video]);
+      const existing = groups.get(groupKey);
+      if (existing) existing.push(video);
+      else groups.set(groupKey, [video]);
     }
     return [...groups.entries()].map(([key, videos]) => ({
       key,
@@ -563,27 +556,22 @@ export class App implements OnInit {
       label: this.formatGroupLabel(videos[0].captureDate, key),
       videos,
     }));
-  }
+  });
 
-  protected get yearGroups(): TimelineYearGroup[] {
+  protected readonly yearGroups = computed<TimelineYearGroup[]>(() => {
     const years = new Map<number, VideoGroup[]>();
-    for (const group of this.groupedVideos) {
+    for (const group of this.groupedVideos()) {
       const year = group.videos[0].year;
       const groups = years.get(year) ?? [];
       groups.push(group);
       years.set(year, groups);
     }
     return [...years.entries()].map(([year, groups]) => ({ year, groups }));
-  }
+  });
 
-  protected get monthAnchors(): Array<{
-    key: string;
-    monthKey: string;
-    year: number;
-    month: string;
-  }> {
-    const anchors = new Map<string, (typeof this.groupedVideos)[number]>();
-    for (const group of this.groupedVideos) {
+  protected readonly monthAnchors = computed(() => {
+    const anchors = new Map<string, VideoGroup>();
+    for (const group of this.groupedVideos()) {
       if (!anchors.has(group.monthKey)) anchors.set(group.monthKey, group);
     }
     return [...anchors.values()].map((group) => ({
@@ -592,11 +580,11 @@ export class App implements OnInit {
       year: group.videos[0].year,
       month: group.videos[0].month,
     }));
-  }
+  });
 
-  protected get yearAnchors(): TimelineYearAnchor[] {
+  protected readonly yearAnchors = computed<TimelineYearAnchor[]>(() => {
     const years = new Map<number, Array<{ key: string; label: string; month: number }>>();
-    for (const anchor of this.monthAnchors) {
+    for (const anchor of this.monthAnchors()) {
       const month = Number(anchor.monthKey.slice(5, 7));
       const months = years.get(anchor.year) ?? [];
       months.push({ key: anchor.monthKey, label: anchor.month.slice(0, 3), month });
@@ -606,7 +594,7 @@ export class App implements OnInit {
       year,
       months: months.sort((a, b) => a.month - b.month),
     }));
-  }
+  });
 
   private loadGroupingPreference(): void {
     const saved = localStorage.getItem(this.groupingStorageKey);
@@ -698,8 +686,11 @@ export class App implements OnInit {
   }
 
   protected setVideoDuration(video: VideoRecord, event: Event): void {
+    // The catalog already carries durations for indexed videos; only fill real gaps so
+    // metadata loads during scrolling do not churn signal state.
+    if (video.durationMs !== null && video.durationMs !== undefined) return;
     const duration = (event.target as HTMLVideoElement).duration;
-    if (!Number.isFinite(duration)) return;
+    if (!Number.isFinite(duration) || this.videoDurations().has(video.id)) return;
     this.videoDurations.update((durations) => {
       const next = new Map(durations);
       next.set(video.id, duration);
@@ -731,14 +722,13 @@ export class App implements OnInit {
     this.activeVideo.set(null);
   }
 
-  protected get viewerIndex(): number {
+  protected readonly viewerIndex = computed(() => {
     const activeId = this.activeVideo()?.id;
-    return activeId ? this.filteredVideos.findIndex((video) => video.id === activeId) : -1;
-  }
+    return activeId ? this.filteredVideos().findIndex((video) => video.id === activeId) : -1;
+  });
 
   protected navigateViewer(direction: -1 | 1): void {
-    const index = this.viewerIndex;
-    const nextVideo = this.filteredVideos[index + direction];
+    const nextVideo = this.filteredVideos()[this.viewerIndex() + direction];
     if (nextVideo) {
       this.activeVideo.set(nextVideo);
     }

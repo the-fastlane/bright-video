@@ -1,4 +1,12 @@
-import { Component, ElementRef, input, output, ViewChild } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  input,
+  output,
+  signal,
+  ViewChild,
+} from '@angular/core';
 import { VideoRecord } from '../../models/video-record';
 
 export type VideoCardPreviewEvent = {
@@ -9,6 +17,7 @@ export type VideoCardPreviewEvent = {
 @Component({
   selector: 'app-video-card',
   templateUrl: './video-card.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class VideoCardComponent {
   readonly video = input.required<VideoRecord>();
@@ -22,7 +31,7 @@ export class VideoCardComponent {
   readonly previewStop = output<HTMLElement>();
   readonly durationLoaded = output<{ video: VideoRecord; event: Event }>();
   readonly menuOpened = output<VideoCardComponent | null>();
-  protected menuOpen = false;
+  protected readonly menuOpen = signal(false);
 
   protected aspectRatio(): string {
     const { width, height } = this.video();
@@ -49,13 +58,14 @@ export class VideoCardComponent {
 
   protected toggleAlbumMenu(event: Event): void {
     this.stopCardClick(event);
-    this.menuOpen = !this.menuOpen;
-    this.menuOpened.emit(this.menuOpen ? this : null);
+    const next = !this.menuOpen();
+    this.menuOpen.set(next);
+    this.menuOpened.emit(next ? this : null);
   }
 
   closeAlbumMenu(): void {
-    if (!this.menuOpen) return;
-    this.menuOpen = false;
+    if (!this.menuOpen()) return;
+    this.menuOpen.set(false);
     this.menuOpened.emit(null);
   }
 }
