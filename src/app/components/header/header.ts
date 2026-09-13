@@ -4,6 +4,7 @@ type RescanProgress = {
   processed: number;
   total: number;
   errors: number;
+  estimatedRemainingMs: number | null;
   currentFile: string | null;
   currentPhase: string | null;
   errorDetails: { file: string; phase: string; error: string }[];
@@ -27,6 +28,7 @@ export class HeaderComponent {
     processed: 0,
     total: 0,
     errors: 0,
+    estimatedRemainingMs: null,
     currentFile: null,
     currentPhase: null,
     errorDetails: [],
@@ -35,6 +37,8 @@ export class HeaderComponent {
   readonly toggleNightMode = output<void>();
   readonly openSettings = output<void>();
   readonly openAlbums = output<void>();
-  readonly rescanLibrary = output<void>();
+  readonly scanLibrary = output<void>();
+  readonly stopScan = output<void>();
+  readonly reindexLibrary = output<void>();
   readonly searchChange = output<Event>();
 }

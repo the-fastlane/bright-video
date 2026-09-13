@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
+import { clearLine, cursorTo, moveCursor } from 'node:readline';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import chokidar from 'chokidar';
@@ -24,11 +25,15 @@ const databasePath = path.resolve(
 const port = Number(process.env.PORT ?? 3000);
 const mediaExtensions = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv']);
 const sidecarSuffix = '.supplemental-metadata.json';
-const metadataSignatureVersion = 'rotation-v2';
+const metadataSignatureVersion = 'media-metadata-v3';
 const configuredScanConcurrency = Number(process.env.SCAN_CONCURRENCY ?? 4);
 const scanConcurrency = Number.isInteger(configuredScanConcurrency)
   ? Math.max(1, configuredScanConcurrency)
   : 4;
+const configuredExifToolConcurrency = Number(process.env.EXIFTOOL_CONCURRENCY ?? 4);
+const exifToolConcurrency = Number.isInteger(configuredExifToolConcurrency)
+  ? Math.max(1, Math.min(scanConcurrency, configuredExifToolConcurrency))
+  : Math.min(scanConcurrency, 4);
 const scanFileTimeoutMs = 1_000;
 const exiftoolPath = path.resolve(root, 'node_modules', 'exiftool-vendored.pl', 'bin', 'exiftool');
 const database = new CatalogDatabase(databasePath);
@@ -38,6 +43,7 @@ let scanStatus = {
   active: false,
   processed: 0,
   total: 0,
+  estimatedRemainingMs: null,
   errors: 0,
   currentFile: null,
   currentPhase: null,
@@ -46,21 +52,25 @@ let scanStatus = {
   completedAt: null,
 };
 let scanInFlight;
+let stopScanRequested = false;
 let pendingPaths = new Set();
 let scanTimer;
+let terminalProgressDrawn = false;
 
 class ExifToolWorker {
   child;
   output = '';
   request;
   timer;
+  queue = [];
 
   ensureStarted() {
     if (this.child) return;
-    this.child = spawn(exiftoolPath, ['-stay_open', 'True', '-@', '-'], {
+    const child = spawn(exiftoolPath, ['-stay_open', 'True', '-@', '-'], {
       stdio: ['pipe', 'pipe', 'ignore'],
     });
-    this.child.stdout.on('data', (chunk) => {
+    this.child = child;
+    child.stdout.on('data', (chunk) => {
       this.output += chunk.toString();
       const markerIndex = this.output.indexOf('{ready}');
       if (markerIndex < 0 || !this.request) return;
@@ -72,10 +82,15 @@ class ExifToolWorker {
         this.finishRequest(error);
       }
     });
-    this.child.on('error', (error) => this.finishRequest(error));
-    this.child.on('exit', () => {
-      if (this.request) this.finishRequest(new Error('ExifTool process exited unexpectedly'));
+    child.on('error', (error) => {
+      if (this.child !== child) return;
       this.child = undefined;
+      this.finishRequest(error);
+    });
+    child.on('exit', () => {
+      if (this.child !== child) return;
+      this.child = undefined;
+      if (this.request) this.finishRequest(new Error('ExifTool process exited unexpectedly'));
     });
   }
 
@@ -87,43 +102,66 @@ class ExifToolWorker {
     if (!request) return;
     if (error) request.reject(error);
     else request.resolve(value);
+    this.pump();
   }
 
   reset(error) {
-    this.finishRequest(error);
-    this.output = '';
-    this.child?.kill('SIGKILL');
+    const child = this.child;
     this.child = undefined;
+    this.output = '';
+    child?.kill('SIGKILL');
+    this.finishRequest(error);
   }
 
-  async read(file) {
+  cancel(error = new Error('Metadata scan stopped')) {
+    const queued = this.queue.splice(0);
+    for (const request of queued) request.reject(error);
+    if (this.request) this.reset(error);
+  }
+
+  pump() {
+    if (this.request || !this.queue.length) return;
     this.ensureStarted();
-    return new Promise((resolve, reject) => {
-      this.request = { resolve, reject };
-      this.timer = setTimeout(
-        () => this.reset(new Error(`Timed out during metadata after ${scanFileTimeoutMs / 1000}s`)),
-        scanFileTimeoutMs,
+    const next = this.queue.shift();
+    this.request = next;
+    this.timer = setTimeout(
+      () => this.reset(new Error(`Timed out during metadata after ${scanFileTimeoutMs / 1000}s`)),
+      scanFileTimeoutMs,
+    );
+    try {
+      this.child.stdin.write(
+        [
+          '-json',
+          '-ImageWidth',
+          '-ImageHeight',
+          '-Rotation',
+          '-VideoRotation',
+          '-Duration',
+          '-CreateDate',
+          '-MediaCreateDate',
+          '-TrackCreateDate',
+          '-CreationDate',
+          '-GPSLatitude',
+          '-GPSLongitude',
+          '-GPSAltitude',
+          next.file,
+          '-execute',
+        ].join('\n') + '\n',
       );
-      try {
-        this.child.stdin.write(
-          [
-            '-json',
-            '-ImageWidth',
-            '-ImageHeight',
-            '-Rotation',
-            '-VideoRotation',
-            '-Duration',
-            '-GPSLatitude',
-            '-GPSLongitude',
-            '-GPSAltitude',
-            file,
-            '-execute',
-          ].join('\n') + '\n',
-        );
-      } catch (error) {
-        this.reset(error);
-      }
+    } catch (error) {
+      this.reset(error);
+    }
+  }
+
+  read(file) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ file, resolve, reject });
+      this.pump();
     });
+  }
+
+  get pendingCount() {
+    return this.queue.length + (this.request ? 1 : 0);
   }
 
   close() {
@@ -132,8 +170,15 @@ class ExifToolWorker {
   }
 }
 
-const metadataTool = new ExifToolWorker();
-process.on('exit', () => metadataTool.close());
+const metadataTools = Array.from({ length: exifToolConcurrency }, () => new ExifToolWorker());
+
+function metadataToolForFile() {
+  return metadataTools.reduce((leastBusy, tool) =>
+    tool.pendingCount < leastBusy.pendingCount ? tool : leastBusy,
+  );
+}
+
+process.on('exit', () => metadataTools.forEach((tool) => tool.close()));
 
 function isVideo(file) {
   return mediaExtensions.has(path.extname(file).toLowerCase());
@@ -189,6 +234,37 @@ function durationMilliseconds(value) {
   return Number.isFinite(number) ? Math.round(number * 1000) : null;
 }
 
+function dateMilliseconds(value) {
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value.getTime();
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const quickTime = text.match(
+    /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:Z|[+-]\d{2}:?\d{2})?$/,
+  );
+  if (quickTime) {
+    const [, year, month, day, hour, minute, second, fraction = '0'] = quickTime;
+    return Date.UTC(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+      Number(`0.${fraction}`) * 1000,
+    );
+  }
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function firstDateMilliseconds(...values) {
+  for (const value of values.flat()) {
+    const timestamp = dateMilliseconds(value);
+    if (timestamp !== null) return timestamp;
+  }
+  return null;
+}
+
 function hasQuarterTurn(value) {
   const rotation = Math.abs(numericValue(value)) % 360;
   return rotation === 90 || rotation === 270;
@@ -196,7 +272,7 @@ function hasQuarterTurn(value) {
 
 async function readMediaMetadata(file) {
   try {
-    const [tags] = await metadataTool.read(file);
+    const [tags] = await metadataToolForFile().read(file);
     const rawWidth = Number.isFinite(Number(tags.ImageWidth)) ? Number(tags.ImageWidth) : null;
     const rawHeight = Number.isFinite(Number(tags.ImageHeight)) ? Number(tags.ImageHeight) : null;
     const rotated = hasQuarterTurn(tags.Rotation ?? tags.VideoRotation);
@@ -205,6 +281,13 @@ async function readMediaMetadata(file) {
       longitude: numericValue(tags.GPSLongitude),
       altitude: numericValue(tags.GPSAltitude),
       durationMs: durationMilliseconds(tags.Duration),
+      captureDateMs: firstDateMilliseconds(
+        tags.CreateDate,
+        tags.MediaCreateDate,
+        tags.TrackCreateDate,
+        tags.CreationDate,
+        tags.DateTimeOriginal,
+      ),
       width: rotated ? rawHeight : rawWidth,
       height: rotated ? rawWidth : rawHeight,
     };
@@ -215,7 +298,8 @@ async function readMediaMetadata(file) {
 
 async function fallbackSidecarMetadata(file, stat, mediaMetadata) {
   const timestampMs =
-    Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
+    mediaMetadata.captureDateMs ??
+    (Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs);
   const timestamp = Math.floor(timestampMs / 1000);
   return {
     title: path.basename(file),
@@ -242,6 +326,15 @@ async function fallbackSidecarMetadata(file, stat, mediaMetadata) {
   };
 }
 
+function isGeneratedFallbackMetadata(file, metadata) {
+  return (
+    metadata?.title === path.basename(file) &&
+    !metadata.photoTakenTime &&
+    !metadata.url &&
+    !metadata.googlePhotosOrigin
+  );
+}
+
 async function createFallbackSidecar(file, stat, mediaMetadata) {
   const sidecar = `${file}${sidecarSuffix}`;
   const metadata = await fallbackSidecarMetadata(file, stat, mediaMetadata);
@@ -258,8 +351,14 @@ async function createFallbackSidecar(file, stat, mediaMetadata) {
 async function readSidecar(file, stat, mediaMetadata) {
   for (const sidecar of sidecarCandidates(file)) {
     try {
+      const metadata = JSON.parse(await fs.readFile(sidecar, 'utf8'));
+      if (isGeneratedFallbackMetadata(file, metadata) && mediaMetadata.captureDateMs) {
+        const corrected = await fallbackSidecarMetadata(file, stat, mediaMetadata);
+        await fs.writeFile(sidecar, `${JSON.stringify(corrected, null, 2)}\n`);
+        return { metadata: corrected, path: sidecar };
+      }
       return {
-        metadata: JSON.parse(await fs.readFile(sidecar, 'utf8')),
+        metadata,
         path: sidecar,
       };
     } catch (error) {
@@ -293,9 +392,9 @@ function parseTimestamp(value) {
 
 function recordFromMetadata(file, metadata, stat, mediaMetadata) {
   const relativePath = path.relative(videoRoot, file).split(path.sep).join('/');
-  const captureDate = parseTimestamp(
-    metadata.photoTakenTime?.timestamp ?? metadata.creationTime?.timestamp,
-  );
+  const captureDate =
+    parseTimestamp(metadata.photoTakenTime?.timestamp ?? metadata.creationTime?.timestamp) ??
+    (mediaMetadata.captureDateMs ? new Date(mediaMetadata.captureDateMs).toISOString() : null);
   return {
     id: relativePath,
     title: metadata.title?.replace(/\.[^.]+$/, '') || path.basename(file, path.extname(file)),
@@ -352,7 +451,7 @@ function recordFromDatabase(row) {
   };
 }
 
-async function readRecord(file, onPhase = () => {}) {
+async function readRecord(file, onPhase = () => {}, force = false) {
   let phase = 'filesystem';
   onPhase(phase);
   try {
@@ -366,7 +465,7 @@ async function readRecord(file, onPhase = () => {}) {
     phase = 'database';
     onPhase(phase);
     const existing = database.getVideo(path.relative(videoRoot, file).split(path.sep).join('/'));
-    if (existing?.file_signature === signature && existing.width && existing.height)
+    if (!force && existing?.file_signature === signature && existing.width && existing.height)
       return { ok: true };
     phase = 'metadata';
     onPhase(phase);
@@ -377,9 +476,10 @@ async function readRecord(file, onPhase = () => {}) {
     phase = 'database';
     onPhase(phase);
     sidecarStat = sidecar ? await fs.stat(sidecar).catch(() => null) : null;
+    const finalSignature = `${metadataSignatureVersion}:${stat.size}:${stat.mtimeMs}:${sidecarStat?.size ?? 0}:${sidecarStat?.mtimeMs ?? 0}`;
     database.upsertVideo({
       ...recordFromMetadata(file, metadata, stat, mediaMetadata),
-      fileSignature: signature,
+      fileSignature: finalSignature,
     });
     return { ok: true };
   } catch (error) {
@@ -394,8 +494,8 @@ async function readRecord(file, onPhase = () => {}) {
   }
 }
 
-async function readRecordWithTimeout(file, onPhase) {
-  return readRecord(file, onPhase);
+async function readRecordWithTimeout(file, onPhase, force = false) {
+  return readRecord(file, onPhase, force);
 }
 
 function rebuildCatalog() {
@@ -406,30 +506,62 @@ function rebuildCatalog() {
 function updateScanTerminal(status, done = false) {
   if (!status.total) return;
   const suffix = status.currentFile ? ` ${status.currentFile} (${status.currentPhase})` : '';
+  const remaining = status.estimatedRemainingMs
+    ? `, about ${Math.ceil(status.estimatedRemainingMs / 1000)}s remaining`
+    : '';
   const summary = done
     ? `Scan complete: ${status.processed}/${status.total}${status.errors ? `, ${status.errors} skipped` : ''}`
-    : `Scanning: ${status.processed}/${status.total}${status.errors ? `, ${status.errors} skipped` : ''}${suffix}`;
-  process.stdout.write(`\r\x1b[2K${summary}${done ? '\n' : ''}`);
+    : `Scanning: ${status.processed}/${status.total}${remaining}${status.errors ? `, ${status.errors} skipped` : ''}${suffix}`;
+  const terminalSummary = process.stdout.columns
+    ? summary.slice(0, Math.max(1, process.stdout.columns - 1))
+    : summary;
+  if (process.stdout.isTTY) {
+    if (terminalProgressDrawn) moveCursor(process.stdout, 0, -1);
+    cursorTo(process.stdout, 0);
+    clearLine(process.stdout, 0);
+    process.stdout.write(terminalSummary);
+    if (done) {
+      process.stdout.write('\n');
+      terminalProgressDrawn = false;
+    } else {
+      terminalProgressDrawn = true;
+    }
+    return;
+  }
+  if (terminalProgressDrawn) process.stdout.write('\x1b[1A');
+  process.stdout.write(`\x1b[2K\r${terminalSummary}${done ? '\n' : ''}`);
+  terminalProgressDrawn = !done;
 }
 
-async function scanLibrary(changedPaths = null) {
+function estimatedRemainingMs(status) {
+  if (!status.processed || !status.total || status.processed >= status.total) return null;
+  const startedAt = Date.parse(status.startedAt ?? '');
+  if (!Number.isFinite(startedAt)) return null;
+  const elapsedMs = Date.now() - startedAt;
+  return Math.max(
+    0,
+    Math.round((elapsedMs / status.processed) * (status.total - status.processed)),
+  );
+}
+
+async function scanLibrary(changedPaths = null, force = false) {
   if (scanInFlight) {
     if (changedPaths) changedPaths.forEach((file) => pendingPaths.add(file));
     return scanInFlight;
   }
-  if (!changedPaths) {
-    scanStatus = {
-      active: true,
-      processed: 0,
-      total: 0,
-      errors: 0,
-      currentFile: null,
-      currentPhase: null,
-      errorDetails: [],
-      startedAt: new Date().toISOString(),
-      completedAt: null,
-    };
-  }
+  scanStatus = {
+    active: true,
+    processed: 0,
+    total: 0,
+    estimatedRemainingMs: null,
+    errors: 0,
+    currentFile: null,
+    currentPhase: null,
+    errorDetails: [],
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+  };
+  stopScanRequested = false;
   scanInFlight = (async () => {
     const files = changedPaths ? [...changedPaths] : await walk(videoRoot);
     const mediaFiles = changedPaths
@@ -437,75 +569,75 @@ async function scanLibrary(changedPaths = null) {
           isSidecar(file) ? [videoForSidecar(file)] : isVideo(file) ? [file] : [],
         )
       : files.filter(isVideo);
-    if (!changedPaths) {
-      scanStatus = {
-        active: true,
-        processed: 0,
-        total: mediaFiles.length,
-        errors: 0,
-        currentFile: null,
-        currentPhase: null,
-        errorDetails: [],
-        startedAt: new Date().toISOString(),
-        completedAt: null,
-      };
-      updateScanTerminal(scanStatus);
-    }
+    scanStatus = { ...scanStatus, total: mediaFiles.length };
+    updateScanTerminal(scanStatus);
     let nextIndex = 0;
     const processNext = async () => {
       while (nextIndex < mediaFiles.length) {
+        if (stopScanRequested) return;
         const file = mediaFiles[nextIndex++];
         if (!isVideo(file)) continue;
-        if (!changedPaths) {
+        scanStatus = {
+          ...scanStatus,
+          currentFile: path.relative(videoRoot, file),
+          currentPhase: 'filesystem',
+        };
+        const result = await readRecordWithTimeout(
+          file,
+          (phase) => {
+            scanStatus = { ...scanStatus, currentPhase: phase };
+          },
+          force,
+        );
+        scanStatus = {
+          ...scanStatus,
+          processed: scanStatus.processed + 1,
+          estimatedRemainingMs: estimatedRemainingMs({
+            ...scanStatus,
+            processed: scanStatus.processed + 1,
+          }),
+        };
+        if (!result.ok) {
+          const detail = {
+            file: path.relative(videoRoot, file),
+            phase: result.phase ?? 'unknown',
+            error: result.error ?? 'Unknown indexing error',
+          };
           scanStatus = {
             ...scanStatus,
-            currentFile: path.relative(videoRoot, file),
-            currentPhase: 'filesystem',
+            errors: scanStatus.errors + 1,
+            errorDetails: [...scanStatus.errorDetails, detail],
           };
         }
-        const result = await readRecordWithTimeout(file, (phase) => {
-          if (!changedPaths) scanStatus = { ...scanStatus, currentPhase: phase };
-        });
-        if (!changedPaths) {
-          scanStatus = { ...scanStatus, processed: scanStatus.processed + 1 };
-          if (!result.ok) {
-            const detail = {
-              file: path.relative(videoRoot, file),
-              phase: result.phase ?? 'unknown',
-              error: result.error ?? 'Unknown indexing error',
-            };
-            scanStatus = {
-              ...scanStatus,
-              errors: scanStatus.errors + 1,
-              errorDetails: [...scanStatus.errorDetails, detail],
-            };
-          }
-          updateScanTerminal(scanStatus);
-        }
+        updateScanTerminal(scanStatus);
       }
     };
     await Promise.all(
       Array.from({ length: Math.min(scanConcurrency, mediaFiles.length) }, processNext),
     );
-    if (!changedPaths) {
+    if (!stopScanRequested && !changedPaths) {
       const currentFiles = new Set(mediaFiles);
       database.removeMissingVideoPaths(
         [...currentFiles].map((file) => path.relative(videoRoot, file).split(path.sep).join('/')),
       );
     }
     rebuildCatalog();
-    if (!changedPaths) {
-      scanStatus = {
-        ...scanStatus,
-        active: false,
-        currentFile: null,
-        currentPhase: null,
-        completedAt: new Date().toISOString(),
-      };
-      updateScanTerminal(scanStatus, true);
-    }
+    scanStatus = {
+      ...scanStatus,
+      active: false,
+      currentFile: null,
+      currentPhase: null,
+      completedAt: new Date().toISOString(),
+      estimatedRemainingMs: null,
+      stopped: stopScanRequested,
+    };
+    updateScanTerminal(scanStatus, true);
   })().finally(async () => {
     scanInFlight = undefined;
+    if (stopScanRequested) {
+      pendingPaths = new Set();
+      return;
+    }
     if (pendingPaths.size) {
       const nextPaths = pendingPaths;
       pendingPaths = new Set();
@@ -515,7 +647,27 @@ async function scanLibrary(changedPaths = null) {
   return scanInFlight;
 }
 
+async function findFilesNeedingScan() {
+  const files = (await walk(videoRoot)).filter(isVideo);
+  const pending = [];
+  for (const file of files) {
+    const stat = await fs.stat(file);
+    let sidecarStat = null;
+    for (const candidate of sidecarCandidates(file)) {
+      sidecarStat = await fs.stat(candidate).catch(() => null);
+      if (sidecarStat) break;
+    }
+    const signature = `${metadataSignatureVersion}:${stat.size}:${stat.mtimeMs}:${sidecarStat?.size ?? 0}:${sidecarStat?.mtimeMs ?? 0}`;
+    const relativePath = path.relative(videoRoot, file).split(path.sep).join('/');
+    const existing = database.getVideo(relativePath);
+    if (!existing || existing.file_signature !== signature || !existing.width || !existing.height)
+      pending.push(file);
+  }
+  return pending;
+}
+
 function queueChangedPath(file) {
+  if (stopScanRequested) return;
   pendingPaths.add(file);
   clearTimeout(scanTimer);
   scanTimer = setTimeout(async () => {
@@ -702,9 +854,21 @@ const server = createServer(async (request, response) => {
         return json(response, 400, { error: 'Invalid video or album list' });
       return json(response, 200, { ok: true });
     }
-    if (url.pathname === '/api/rescan' && request.method === 'POST') {
-      void scanLibrary();
-      return json(response, 202, { started: true });
+    if (url.pathname === '/api/scan' && request.method === 'POST') {
+      void findFilesNeedingScan().then((files) => scanLibrary(files));
+      return json(response, 202, { started: true, mode: 'scan' });
+    }
+    if (url.pathname === '/api/scan-stop' && request.method === 'POST') {
+      stopScanRequested = true;
+      clearTimeout(scanTimer);
+      scanTimer = undefined;
+      pendingPaths = new Set();
+      metadataTools.forEach((tool) => tool.cancel());
+      return json(response, 202, { stopping: Boolean(scanInFlight) });
+    }
+    if (url.pathname === '/api/reindex' && request.method === 'POST') {
+      void scanLibrary(null, true);
+      return json(response, 202, { started: true, mode: 'reindex' });
     }
     if (url.pathname.startsWith('/videos/')) return serveVideo(request, response, url.pathname);
     if (await serveStatic(request, response, url.pathname)) return;
@@ -714,6 +878,5 @@ const server = createServer(async (request, response) => {
   }
 });
 
-const startupScan = scanLibrary();
 startWatcher();
 server.listen(port, () => console.log(`Bright Video API listening on http://localhost:${port}`));

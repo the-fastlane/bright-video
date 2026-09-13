@@ -230,6 +230,30 @@
   opacity: 0.65;
 }
 
+.scan-stop-button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #c95757;
+  border-radius: 5px;
+  background: transparent;
+  color: #c95757;
+  cursor: pointer;
+}
+
+.scan-stop-button span {
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+}
+
+.scan-stop-button:hover {
+  background: #c95757;
+  color: white;
+}
+
 .rescan-icon {
   display: inline-block;
   font-size: 16px;
@@ -277,22 +301,16 @@
   height: 100%;
   border-radius: inherit;
   background: var(--coral);
-  transform: scaleX(0);
+  transform: scaleX(var(--rescan-progress, 0));
   transform-origin: left;
-}
-
-.rescan-feedback.running .rescan-progress-fill {
-  animation: rescan-progress 1.4s ease-in-out infinite;
 }
 
 .rescan-feedback.success .rescan-progress-fill {
   background: #4f9b68;
-  transform: scaleX(1);
 }
 
 .rescan-feedback.error .rescan-progress-fill {
   background: #c95757;
-  transform: scaleX(0.35);
 }
 
 .rescan-feedback.error .rescan-status {
@@ -335,20 +353,6 @@
 
 .rescan-details span {
   color: var(--muted);
-}
-
-@keyframes rescan-progress {
-  0% {
-    transform: translateX(-100%) scaleX(0.25);
-  }
-
-  50% {
-    transform: translateX(0) scaleX(0.65);
-  }
-
-  100% {
-    transform: translateX(100%) scaleX(0.25);
-  }
 }
 
 @keyframes rescan-spin {

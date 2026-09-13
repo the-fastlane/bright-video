@@ -228,6 +228,10 @@ export class CatalogDatabase {
     }
   }
 
+  clearVideos() {
+    this.#db.exec('BEGIN; DELETE FROM video_search; DELETE FROM videos; COMMIT;');
+  }
+
   removeVideo(filePath) {
     this.#deleteVideo.run(filePath);
   }
@@ -311,7 +315,9 @@ export class CatalogDatabase {
     const video = this.getVideo(videoPath);
     if (!video) return null;
     return this.#db
-      .prepare('SELECT album_id FROM album_videos WHERE video_id = ? ORDER BY display_order, album_id')
+      .prepare(
+        'SELECT album_id FROM album_videos WHERE video_id = ? ORDER BY display_order, album_id',
+      )
       .all(video.id)
       .map((row) => row.album_id);
   }

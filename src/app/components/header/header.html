@@ -104,11 +104,31 @@
       class="rescan-button"
       type="button"
       [disabled]="rescanning()"
-      (click)="rescanLibrary.emit()"
-      [attr.aria-label]="rescanning() ? 'Rescanning library' : 'Rescan library'"
+      (click)="scanLibrary.emit()"
+      [attr.aria-label]="rescanning() ? 'Scanning library' : 'Scan new files'"
     >
       <span class="rescan-icon" [class.spinning]="rescanning()">↻</span
-      >{{ rescanning() ? 'Scanning' : 'Rescan' }}
+      >{{ rescanning() ? 'Scanning' : 'Scan' }}
+    </button>
+    @if (rescanning()) {
+      <button
+        class="scan-stop-button"
+        type="button"
+        aria-label="Stop scan"
+        title="Stop scan"
+        (click)="stopScan.emit()"
+      >
+        <span aria-hidden="true"></span>
+      </button>
+    }
+    <button
+      class="rescan-button"
+      type="button"
+      [disabled]="rescanning()"
+      (click)="reindexLibrary.emit()"
+      aria-label="Reindex entire library"
+    >
+      <span class="rescan-icon">⟳</span>Reindex
     </button>
     <div
       class="rescan-feedback"
@@ -120,11 +140,14 @@
       <div
         class="rescan-progress"
         role="progressbar"
+        [style.--rescan-progress]="
+          rescanProgress().total ? rescanProgress().processed / rescanProgress().total : 0
+        "
         [attr.aria-label]="rescanMessage() || 'Rescan status'"
         [attr.aria-busy]="rescanState() === 'running'"
-        [attr.aria-valuenow]="rescanState() === 'success' ? 100 : null"
-        [attr.aria-valuemin]="rescanState() === 'success' ? 0 : null"
-        [attr.aria-valuemax]="rescanState() === 'success' ? 100 : null"
+        [attr.aria-valuenow]="rescanProgress().total ? rescanProgress().processed : null"
+        [attr.aria-valuemin]="rescanProgress().total ? 0 : null"
+        [attr.aria-valuemax]="rescanProgress().total || null"
       >
         <span class="rescan-progress-fill"></span>
       </div>

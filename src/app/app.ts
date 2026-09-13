@@ -20,6 +20,8 @@ type RescanProgress = {
   currentFile: string | null;
   currentPhase: string | null;
   errorDetails: { file: string; phase: string; error: string }[];
+  estimatedRemainingMs: number | null;
+  stopped?: boolean;
 };
 
 @Component({
@@ -74,6 +76,7 @@ export class App implements OnInit {
     processed: 0,
     total: 0,
     errors: 0,
+    estimatedRemainingMs: null,
     currentFile: null,
     currentPhase: null,
     errorDetails: [],
@@ -107,6 +110,7 @@ export class App implements OnInit {
       });
     void this.loadCatalog('', true);
     void this.loadAlbums();
+    void this.resumeScanStatus();
   }
 
   protected toggleNightMode(): void {
@@ -117,7 +121,20 @@ export class App implements OnInit {
     });
   }
 
-  protected async rescanLibrary(): Promise<void> {
+  protected scanLibrary(): void {
+    void this.runScan('/api/scan', 'Starting scan…');
+  }
+
+  protected stopScan(): void {
+    if (!this.rescanning()) return;
+    void fetch('/api/scan-stop', { method: 'POST' });
+  }
+
+  protected reindexLibrary(): void {
+    void this.runScan('/api/reindex', 'Starting reindex…');
+  }
+
+  private async runScan(endpoint: string, startMessage: string): Promise<void> {
     if (this.rescanning()) return;
     this.rescanning.set(true);
     this.rescanState.set('running');
@@ -125,50 +142,99 @@ export class App implements OnInit {
       processed: 0,
       total: 0,
       errors: 0,
+      estimatedRemainingMs: null,
       currentFile: null,
       currentPhase: null,
       errorDetails: [],
     });
-    this.rescanMessage.set('Starting scan…');
+    this.rescanMessage.set(startMessage);
     try {
-      const response = await fetch('/api/rescan', { method: 'POST' });
-      if (!response.ok) throw new Error('Rescan unavailable');
-      await this.waitForRescan();
+      const response = await fetch(endpoint, { method: 'POST' });
+      if (!response.ok) throw new Error('Scan unavailable');
+      await this.waitForScan();
       await this.loadCatalog(this.searchQuery());
       this.rescanState.set('success');
-      const { processed, errors } = this.rescanProgress();
+      const { processed, total, errors, stopped } = this.rescanProgress();
       this.rescanMessage.set(
-        errors ? `${processed} processed, ${errors} skipped` : `${processed} videos indexed`,
+        stopped
+          ? `Stopped after ${processed} of ${total} processed`
+          : errors
+            ? `${processed} processed, ${errors} skipped`
+            : `${processed} videos indexed`,
       );
     } catch {
       this.rescanState.set('error');
-      this.rescanMessage.set('Rescan failed. Check the local API.');
+      this.rescanMessage.set('Scan failed. Check the local API.');
     } finally {
       this.rescanning.set(false);
     }
   }
 
-  private async waitForRescan(): Promise<void> {
+  private async waitForScan(): Promise<void> {
     while (true) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       const response = await fetch('/api/scan-status');
       if (!response.ok) throw new Error('Scan status unavailable');
       const status = (await response.json()) as RescanProgress & { active: boolean };
-      this.rescanProgress.set({
-        processed: status.processed,
-        total: status.total,
-        errors: status.errors,
-        currentFile: status.currentFile,
-        currentPhase: status.currentPhase,
-        errorDetails: status.errorDetails,
-      });
-      this.rescanMessage.set(
-        status.total
-          ? `${status.processed} of ${status.total} processed${status.errors ? ` · ${status.errors} skipped` : ''}${status.currentFile ? ` · ${status.currentFile} (${status.currentPhase})` : ''}`
-          : 'Scanning library metadata…',
-      );
+      this.applyScanStatus(status);
       if (!status.active) return;
     }
+  }
+
+  private async resumeScanStatus(): Promise<void> {
+    try {
+      const response = await fetch('/api/scan-status');
+      if (!response.ok) return;
+      const status = (await response.json()) as RescanProgress & { active: boolean };
+      if (!status.active || this.rescanning()) return;
+      this.rescanning.set(true);
+      this.rescanState.set('running');
+      this.applyScanStatus(status);
+      await this.waitForScan();
+      await this.loadCatalog(this.searchQuery());
+      this.rescanState.set('success');
+      const { processed, total, errors, stopped } = this.rescanProgress();
+      this.rescanMessage.set(
+        stopped
+          ? `Stopped after ${processed} of ${total} processed`
+          : errors
+            ? `${processed} processed, ${errors} skipped`
+            : `${processed} videos indexed`,
+      );
+    } catch {
+      this.rescanState.set('error');
+      this.rescanMessage.set('Scan status unavailable. Check the local API.');
+    } finally {
+      this.rescanning.set(false);
+    }
+  }
+
+  private applyScanStatus(status: RescanProgress & { active: boolean }): void {
+    this.rescanProgress.set({
+      processed: status.processed,
+      total: status.total,
+      errors: status.errors,
+      currentFile: status.currentFile,
+      currentPhase: status.currentPhase,
+      errorDetails: status.errorDetails,
+      estimatedRemainingMs: status.estimatedRemainingMs,
+      stopped: status.stopped,
+    });
+    const remaining = this.formatRemainingTime(status.estimatedRemainingMs);
+    this.rescanMessage.set(
+      status.total
+        ? `${status.processed} of ${status.total} processed${remaining ? ` · ${remaining}` : ''}${status.errors ? ` · ${status.errors} skipped` : ''}${status.currentFile ? ` · ${status.currentFile} (${status.currentPhase})` : ''}`
+        : 'Scanning library metadata…',
+    );
+  }
+
+  private formatRemainingTime(milliseconds: number | null): string {
+    if (milliseconds === null) return '';
+    const totalSeconds = Math.max(1, Math.ceil(milliseconds / 1000));
+    if (totalSeconds < 60) return `about ${totalSeconds}s remaining`;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return seconds ? `about ${minutes}m ${seconds}s remaining` : `about ${minutes}m remaining`;
   }
 
   protected setSearchQuery(event: Event): void {

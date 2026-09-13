@@ -76,7 +76,7 @@ For a NAS, replace `localhost` with the NAS IP address. For example:
 http://192.168.1.25:8420/
 ```
 
-The first scan may take some time for a large library. Check the service health with:
+BrightVideo does not scan the library automatically on startup. Use **Scan** in the header to index only new or changed files. Use **Reindex** when metadata parsing rules change or you need to rebuild the full catalog; a full reindex may take some time for a large library. Check the service health with:
 
 ```bash
 curl http://localhost:8420/api/health
