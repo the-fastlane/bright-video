@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "scripts": {
     "ng": "ng",
-    "start": "node --env-file=.env server/mount-nas.mjs && concurrently --kill-others --names api,ui --prefix-colors magenta,cyan \"npm:api\" \"npm:start:ui\"",
+    "start": "node --env-file=.env server/mount-nas.mjs && node --env-file=.env server/start.mjs",
     "api": "node --env-file=.env server/index.mjs",
     "start:local": "node --env-file=.env server/index.mjs",
-    "start:ui": "PATH=\"$HOME/.nvm/versions/node/v22.22.3/bin:$PATH\" ng serve --port 4317",
+    "test:reindex": "node server/reindex-smoke.mjs",
+    "start:ui": "PATH=\"$HOME/.nvm/versions/node/v22.22.3/bin:$PATH\" ng serve",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
     "test": "ng test"

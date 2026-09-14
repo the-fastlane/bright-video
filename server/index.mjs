@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import chokidar from 'chokidar';
+import { ExifTool } from 'exiftool-vendored';
 import { CatalogDatabase } from './catalog-db.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -21,7 +22,8 @@ if (videoSource !== 'local' && videoSource !== 'nas') {
 }
 const videoRoot = path.resolve(configuredVideoRoot);
 const databasePath = path.resolve(
-  process.env.DATABASE_PATH ?? path.join(root, 'data', 'bright-video.db'),
+  process.env.DATABASE_PATH ??
+    path.join(root, 'data', videoSource === 'nas' ? 'bright-video-nas.db' : 'bright-video.db'),
 );
 const port = Number(process.env.PORT ?? 3000);
 const mediaExtensions = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv']);
@@ -33,13 +35,15 @@ const scanConcurrency = Number.isInteger(configuredScanConcurrency)
   : 4;
 const configuredExifToolConcurrency = Number(process.env.EXIFTOOL_CONCURRENCY ?? 4);
 const exifToolConcurrency = Number.isInteger(configuredExifToolConcurrency)
-  ? Math.max(1, Math.min(scanConcurrency, configuredExifToolConcurrency))
-  : Math.min(scanConcurrency, 4);
+  ? videoSource === 'local'
+    ? scanConcurrency
+    : Math.max(1, Math.min(scanConcurrency, configuredExifToolConcurrency))
+  : videoSource === 'local'
+    ? scanConcurrency
+    : Math.min(scanConcurrency, 4);
 // A NAS read of a large moov atom regularly exceeds a second; too short a timeout means the
 // file is never persisted and gets retried on every future scan.
-const configuredScanFileTimeout = Number(
-  process.env.SCAN_FILE_TIMEOUT_MS ?? (videoSource === 'nas' ? 5_000 : 1_000),
-);
+const configuredScanFileTimeout = Number(process.env.SCAN_FILE_TIMEOUT_MS ?? 5_000);
 const scanFileTimeoutMs = Number.isFinite(configuredScanFileTimeout)
   ? Math.max(500, configuredScanFileTimeout)
   : 5_000;
@@ -69,38 +73,21 @@ const configuredWatchInterval = Number(
 const watchIntervalMs = Number.isFinite(configuredWatchInterval)
   ? Math.max(1_000, configuredWatchInterval)
   : 60_000;
-const exiftoolPath = path.resolve(root, 'node_modules', 'exiftool-vendored.pl', 'bin', 'exiftool');
 // Without -fast, ExifTool scans for trailers and ends up streaming whole video files across the
 // network. -fast yields byte-identical tags for every format here; -fast2 drops QuickTime metadata
 // entirely, so it must not be used.
 const exiftoolSpeedArgs =
-  (process.env.EXIFTOOL_FAST ?? 'true').trim().toLowerCase() === 'false' ? [] : ['-fast'];
+  videoSource === 'nas' && (process.env.EXIFTOOL_FAST ?? 'true').trim().toLowerCase() !== 'false'
+    ? ['-fast']
+    : [];
 const database = new CatalogDatabase(databasePath);
-const monthFormatter = new Intl.DateTimeFormat('en', { month: 'long', timeZone: 'UTC' });
-let catalog = database.listVideos().map(recordFromDatabase);
-let catalogPayload = null;
-let catalogVersion = 0;
-let lastScan = null;
-let scanStatus = {
-  active: false,
-  mode: null,
-  processed: 0,
-  total: 0,
-  estimatedRemainingMs: null,
-  errors: 0,
-  currentFile: null,
-  currentPhase: null,
-  errorDetails: [],
-  startedAt: null,
-  completedAt: null,
-};
-let scanInFlight;
-let stopScanRequested = false;
-let pendingPaths = new Set();
-let scanTimer;
-let terminalProgressDrawn = false;
-let lastTerminalDrawMs = 0;
-const maxRetainedErrorDetails = 200;
+const exiftoolPath = path.resolve(root, 'node_modules', 'exiftool-vendored.pl', 'bin', 'exiftool');
+const exiftool = new ExifTool({
+  maxProcs: exifToolConcurrency,
+  taskTimeoutMillis: scanFileTimeoutMs,
+  spawnTimeoutMillis: scanFileTimeoutMs,
+  taskRetries: 0,
+});
 
 class ExifToolWorker {
   child;
@@ -111,10 +98,11 @@ class ExifToolWorker {
 
   ensureStarted() {
     if (this.child) return;
-    const child = spawn(exiftoolPath, ['-stay_open', 'True', '-@', '-'], {
-      stdio: ['pipe', 'pipe', 'ignore'],
+    const child = spawn('/usr/bin/perl', [exiftoolPath, '-stay_open', 'True', '-@', '-'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
+    child.stderr.resume();
     child.stdout.on('data', (chunk) => {
       this.output += chunk.toString();
       const markerIndex = this.output.indexOf('{ready}');
@@ -177,7 +165,6 @@ class ExifToolWorker {
       this.child.stdin.write(
         [
           '-json',
-          ...exiftoolSpeedArgs,
           '-ImageWidth',
           '-ImageHeight',
           '-Rotation',
@@ -216,7 +203,10 @@ class ExifToolWorker {
   }
 }
 
-const metadataTools = Array.from({ length: exifToolConcurrency }, () => new ExifToolWorker());
+const metadataTools =
+  videoSource === 'local'
+    ? Array.from({ length: exifToolConcurrency }, () => new ExifToolWorker())
+    : [];
 
 function metadataToolForFile() {
   return metadataTools.reduce((leastBusy, tool) =>
@@ -225,6 +215,33 @@ function metadataToolForFile() {
 }
 
 process.on('exit', () => metadataTools.forEach((tool) => tool.close()));
+const monthFormatter = new Intl.DateTimeFormat('en', { month: 'long', timeZone: 'UTC' });
+let catalog = database.listVideos().map(recordFromDatabase);
+let catalogPayload = null;
+let catalogVersion = 0;
+let lastScan = null;
+let scanStatus = {
+  active: false,
+  mode: null,
+  processed: 0,
+  total: 0,
+  estimatedRemainingMs: null,
+  errors: 0,
+  currentFile: null,
+  currentPhase: null,
+  errorDetails: [],
+  startedAt: null,
+  completedAt: null,
+};
+let scanInFlight;
+let stopScanRequested = false;
+let pendingPaths = new Set();
+let scanTimer;
+let videoWatcher;
+let suppressWatcherChanges = false;
+let terminalProgressDrawn = false;
+let lastTerminalDrawMs = 0;
+const maxRetainedErrorDetails = 200;
 
 function isVideo(file) {
   return mediaExtensions.has(path.extname(file).toLowerCase());
@@ -318,7 +335,26 @@ function hasQuarterTurn(value) {
 
 async function readMediaMetadata(file) {
   try {
-    const [tags] = await metadataToolForFile().read(file);
+    const tags =
+      videoSource === 'local'
+        ? (await metadataToolForFile().read(file))[0]
+        : await exiftool.read(file, {
+            readArgs: [
+              ...exiftoolSpeedArgs,
+              '-ImageWidth',
+              '-ImageHeight',
+              '-Rotation',
+              '-VideoRotation',
+              '-Duration',
+              '-CreateDate',
+              '-MediaCreateDate',
+              '-TrackCreateDate',
+              '-CreationDate',
+              '-GPSLatitude',
+              '-GPSLongitude',
+              '-GPSAltitude',
+            ],
+          });
     const rawWidth = Number.isFinite(Number(tags.ImageWidth)) ? Number(tags.ImageWidth) : null;
     const rawHeight = Number.isFinite(Number(tags.ImageHeight)) ? Number(tags.ImageHeight) : null;
     const rotated = hasQuarterTurn(tags.Rotation ?? tags.VideoRotation);
@@ -665,6 +701,12 @@ async function scanLibrary(changedPaths = null, force = false, contexts = null) 
     if (changedPaths) changedPaths.forEach((file) => pendingPaths.add(file));
     return scanInFlight;
   }
+  if (force && !changedPaths && videoWatcher) {
+    suppressWatcherChanges = true;
+    pendingPaths = new Set();
+    void videoWatcher.close();
+    videoWatcher = undefined;
+  }
   scanStatus = {
     active: true,
     mode: force ? 'reindex' : 'scan',
@@ -753,6 +795,10 @@ async function scanLibrary(changedPaths = null, force = false, contexts = null) 
     updateScanTerminal(scanStatus, true);
   })().finally(async () => {
     scanInFlight = undefined;
+    if (force && !changedPaths && watchEnabled && !videoWatcher) {
+      videoWatcher = startWatcher();
+      suppressWatcherChanges = false;
+    }
     if (stopScanRequested) {
       pendingPaths = new Set();
       return;
@@ -800,7 +846,7 @@ function pruneMissingVideos(mediaFiles) {
 }
 
 function queueChangedPath(file) {
-  if (stopScanRequested) return;
+  if (stopScanRequested || suppressWatcherChanges) return;
   pendingPaths.add(file);
   clearTimeout(scanTimer);
   scanTimer = setTimeout(async () => {
@@ -1176,8 +1222,10 @@ const server = createServer(async (request, response) => {
       return json(response, 202, { stopping: Boolean(scanInFlight) });
     }
     if (url.pathname === '/api/reindex' && request.method === 'POST') {
+      const reindexMode = videoSource === 'local' ? 'local-main' : 'nas-optimized';
+      console.log(`Starting ${reindexMode} reindex for ${videoRoot}`);
       void scanLibrary(null, true);
-      return json(response, 202, { started: true, mode: 'reindex' });
+      return json(response, 202, { started: true, mode: 'reindex', source: videoSource });
     }
     if (url.pathname.startsWith('/videos/')) return serveVideo(request, response, url.pathname);
     if (await serveStatic(request, response, url.pathname)) return;
@@ -1187,7 +1235,7 @@ const server = createServer(async (request, response) => {
   }
 });
 
-startWatcher();
+videoWatcher = startWatcher();
 // Media playback reuses connections heavily; keep them alive longer than the browser's idle window.
 server.keepAliveTimeout = 70_000;
 server.headersTimeout = 75_000;
