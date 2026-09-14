@@ -48,6 +48,12 @@ const configuredStatConcurrency = Number(process.env.STAT_CONCURRENCY ?? 64);
 const statConcurrency = Number.isInteger(configuredStatConcurrency)
   ? Math.max(1, configuredStatConcurrency)
   : 64;
+const configuredMediaStreamConcurrency = Number(
+  process.env.MEDIA_STREAM_CONCURRENCY ?? (videoSource === 'nas' ? 1 : 4),
+);
+const mediaStreamConcurrency = Number.isInteger(configuredMediaStreamConcurrency)
+  ? Math.max(1, configuredMediaStreamConcurrency)
+  : 4;
 // Matches the NFS rsize so each stream read maps onto a single network read.
 const streamChunkSize = 1 << 20;
 const openRangeChunkSize = 4 * 1024 * 1024;
@@ -55,6 +61,7 @@ const videoCacheMaxAgeSeconds = Number(process.env.VIDEO_CACHE_MAX_AGE ?? 86_400
 const statCacheTtlMs = Number(process.env.STAT_CACHE_TTL_MS ?? 60_000);
 const statCacheMaxEntries = 20_000;
 const watchEnabled = (process.env.WATCH_ENABLED ?? 'true').trim().toLowerCase() !== 'false';
+const mediaDebug = (process.env.MEDIA_DEBUG ?? 'false').trim().toLowerCase() === 'true';
 // Polling every second across a NAS library floods it with stat calls and starves streaming.
 const configuredWatchInterval = Number(
   process.env.WATCH_INTERVAL_MS ?? (videoSource === 'nas' ? 60_000 : 1_000),
@@ -434,6 +441,52 @@ async function mapConcurrent(items, limit, worker) {
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
 }
+
+function createSemaphore(limit) {
+  let active = 0;
+  const waiters = [];
+  const releaseNext = () => {
+    active -= 1;
+    while (waiters.length) {
+      const next = waiters.shift();
+      if (next.signal?.aborted) {
+        next.reject(Object.assign(new Error('Media request aborted'), { code: 'ABORT_ERR' }));
+        continue;
+      }
+      next.signal?.removeEventListener('abort', next.onAbort);
+      active += 1;
+      next.resolve(releaseNext);
+      break;
+    }
+  };
+  return {
+    getState() {
+      return { active, queued: waiters.length };
+    },
+    acquire(signal) {
+      if (active < limit) {
+        active += 1;
+        return Promise.resolve(releaseNext);
+      }
+      if (signal?.aborted)
+        return Promise.reject(
+          Object.assign(new Error('Media request aborted'), { code: 'ABORT_ERR' }),
+        );
+      return new Promise((resolve, reject) => {
+        const waiter = { resolve, reject, signal, onAbort: undefined };
+        waiter.onAbort = () => {
+          const index = waiters.indexOf(waiter);
+          if (index >= 0) waiters.splice(index, 1);
+          reject(Object.assign(new Error('Media request aborted'), { code: 'ABORT_ERR' }));
+        };
+        signal?.addEventListener('abort', waiter.onAbort, { once: true });
+        waiters.push(waiter);
+      });
+    },
+  };
+}
+
+const mediaReadSlots = createSemaphore(mediaStreamConcurrency);
 
 function toRelativePath(file) {
   return path.relative(videoRoot, file).split(path.sep).join('/');
@@ -866,24 +919,56 @@ function isClientAbort(error) {
   return (
     error?.code === 'ERR_STREAM_PREMATURE_CLOSE' ||
     error?.code === 'ECONNRESET' ||
-    error?.code === 'EPIPE'
+    error?.code === 'EPIPE' ||
+    error?.code === 'ABORT_ERR'
   );
 }
 
+let nextMediaRequestId = 1;
+
 async function serveVideo(request, response, pathname) {
+  const requestStartedAt = Date.now();
+  const mediaRequestId = nextMediaRequestId++;
+  const requestAbortController = new AbortController();
+  request.once('aborted', () => requestAbortController.abort());
+  response.once('close', () => requestAbortController.abort());
   const relativePath = decodeURIComponent(pathname.slice('/videos/'.length));
   const file = path.resolve(videoRoot, relativePath);
   if (!file.startsWith(`${videoRoot}${path.sep}`))
     return json(response, 403, { error: 'Forbidden path' });
   if (request.method !== 'GET' && request.method !== 'HEAD')
     return json(response, 405, { error: 'Method not allowed' });
+  const debugMedia = (message) => {
+    if (mediaDebug)
+      console.log(`[media #${mediaRequestId}] ${Date.now() - requestStartedAt}ms ${message}`);
+  };
+  debugMedia(`start file=${relativePath} range=${request.headers.range ?? 'none'}`);
+  const statStartedAt = Date.now();
+  const cachedStat = videoStatCache.get(file);
+  const statWasCached = Boolean(cachedStat && cachedStat.expires > statStartedAt);
+  const catalogRecord = database.getVideo(relativePath);
   let stat;
   try {
-    stat = await cachedVideoStat(file);
+    if (
+      catalogRecord &&
+      Number.isFinite(catalogRecord.file_size) &&
+      Number.isFinite(catalogRecord.modified_at)
+    ) {
+      stat = {
+        size: catalogRecord.file_size,
+        mtimeMs: catalogRecord.modified_at,
+        isFile: () => true,
+      };
+    } else {
+      stat = await cachedVideoStat(file);
+    }
     if (!stat.isFile()) return json(response, 404, { error: 'Not found' });
   } catch {
     return json(response, 404, { error: 'Video not found' });
   }
+  debugMedia(
+    `stat ${Date.now() - statStartedAt}ms source=${catalogRecord ? 'catalog' : 'filesystem'} cache=${statWasCached}`,
+  );
 
   const extension = path.extname(file).toLowerCase();
   const type = videoContentTypes[extension] ?? 'video/quicktime';
@@ -906,8 +991,26 @@ async function serveVideo(request, response, pathname) {
   try {
     if (!range) {
       response.writeHead(200, { ...validators, 'content-type': type, 'content-length': stat.size });
+      debugMedia(`headers status=200 length=${stat.size}`);
       if (request.method === 'HEAD') return response.end();
-      await pipeline(createReadStream(file, { highWaterMark: streamChunkSize }), response);
+      const beforeAcquire = mediaReadSlots.getState();
+      debugMedia(`slot-wait active=${beforeAcquire.active} queued=${beforeAcquire.queued}`);
+      const releaseReadSlot = await mediaReadSlots.acquire(requestAbortController.signal);
+      try {
+        const afterAcquire = mediaReadSlots.getState();
+        debugMedia(`slot-acquired active=${afterAcquire.active} queued=${afterAcquire.queued}`);
+        const stream = createReadStream(file, {
+          highWaterMark: streamChunkSize,
+          signal: requestAbortController.signal,
+        });
+        stream.once('data', () => debugMedia('first-byte'));
+        await pipeline(stream, response);
+        debugMedia('complete');
+      } finally {
+        releaseReadSlot();
+        const afterRelease = mediaReadSlots.getState();
+        debugMedia(`slot-release active=${afterRelease.active} queued=${afterRelease.queued}`);
+      }
       return;
     }
     const match = /^bytes=(\d*)-(\d*)$/.exec(range);
@@ -923,14 +1026,35 @@ async function serveVideo(request, response, pathname) {
       'content-length': end - start + 1,
       'content-range': `bytes ${start}-${end}/${stat.size}`,
     });
+    debugMedia(`headers status=206 bytes=${start}-${end}`);
     if (request.method === 'HEAD') return response.end();
-    await pipeline(
-      createReadStream(file, { start, end, highWaterMark: streamChunkSize }),
-      response,
-    );
+    const beforeAcquire = mediaReadSlots.getState();
+    debugMedia(`slot-wait active=${beforeAcquire.active} queued=${beforeAcquire.queued}`);
+    const releaseReadSlot = await mediaReadSlots.acquire(requestAbortController.signal);
+    try {
+      const afterAcquire = mediaReadSlots.getState();
+      debugMedia(`slot-acquired active=${afterAcquire.active} queued=${afterAcquire.queued}`);
+      const stream = createReadStream(file, {
+        start,
+        end,
+        highWaterMark: streamChunkSize,
+        signal: requestAbortController.signal,
+      });
+      stream.once('data', () => debugMedia('first-byte'));
+      await pipeline(stream, response);
+      debugMedia('complete');
+    } finally {
+      releaseReadSlot();
+      const afterRelease = mediaReadSlots.getState();
+      debugMedia(`slot-release active=${afterRelease.active} queued=${afterRelease.queued}`);
+    }
   } catch (error) {
     // Browsers abort media requests constantly while scrolling; that is not an error.
-    if (isClientAbort(error)) return;
+    if (isClientAbort(error)) {
+      debugMedia(`client-abort code=${error.code ?? 'unknown'}`);
+      return;
+    }
+    debugMedia(`error ${error instanceof Error ? error.message : String(error)}`);
     if (!response.headersSent) json(response, 404, { error: 'Video not found' });
   }
 }
@@ -996,6 +1120,8 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === '/api/albums' && request.method === 'GET')
       return json(response, 200, { albums: database.listAlbums() });
+    if (url.pathname === '/api/config' && request.method === 'GET')
+      return json(response, 200, { mediaDebug });
     if (url.pathname === '/api/scan-status' && request.method === 'GET')
       return json(response, 200, scanStatus);
     if (url.pathname === '/api/albums' && request.method === 'POST') {

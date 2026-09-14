@@ -37,6 +37,7 @@
                       <app-video-card
                         [video]="video"
                         [loaded]="loadedVideoIds().has(video.id)"
+                        [mediaDebug]="mediaDebug()"
                         [duration]="formatDuration(video)"
                         [previewLoading]="previewLoadingId() === video.id"
                         (open)="openVideo.emit($event)"

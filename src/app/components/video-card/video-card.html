@@ -21,7 +21,14 @@
         muted
         disableremoteplayback
         disablepictureinpicture
-        (loadedmetadata)="durationLoaded.emit({ video: video(), event: $event })"
+        (loadstart)="logMediaEvent($event)"
+        (loadedmetadata)="handleLoadedMetadata($event)"
+        (progress)="logMediaEvent($event)"
+        (canplay)="logMediaEvent($event)"
+        (stalled)="logMediaEvent($event)"
+        (suspend)="logMediaEvent($event)"
+        (abort)="logMediaEvent($event)"
+        (error)="logMediaEvent($event)"
       ></video>
     }
     <div class="media-shade"></div>

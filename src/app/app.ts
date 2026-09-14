@@ -92,6 +92,8 @@ export class App implements OnInit {
   });
   protected readonly activeMonth = signal('2019-11');
   protected readonly loadedVideoIds = signal<Set<string>>(new Set());
+  protected readonly mediaDebug = signal(false);
+  private suspendedLoadedVideoIds?: Set<string>;
   private previewTimer?: ReturnType<typeof setTimeout>;
   private searchTimer?: ReturnType<typeof setTimeout>;
   private catalogRequestId = 0;
@@ -99,6 +101,7 @@ export class App implements OnInit {
   private readonly destroyRef = inject(DestroyRef);
 
   ngOnInit(): void {
+    void this.loadRuntimeConfig();
     this.loadGroupingPreference();
     this.loadGridGapPreference();
     this.loadNightModePreference();
@@ -120,6 +123,17 @@ export class App implements OnInit {
     void this.loadCatalog('', true);
     void this.loadAlbums();
     void this.resumeScanStatus();
+  }
+
+  private async loadRuntimeConfig(): Promise<void> {
+    try {
+      const response = await fetch('/api/config');
+      if (!response.ok) return;
+      const config = (await response.json()) as { mediaDebug?: boolean };
+      this.mediaDebug.set(config.mediaDebug === true);
+    } catch {
+      this.mediaDebug.set(false);
+    }
   }
 
   protected toggleNightMode(): void {
@@ -717,11 +731,18 @@ export class App implements OnInit {
   }
 
   protected openViewer(video: VideoRecord): void {
+    this.suspendedLoadedVideoIds = new Set(this.loadedVideoIds());
+    this.loadedVideoIds.set(new Set());
     this.activeVideo.set(video);
   }
 
   protected closeViewer(): void {
     this.activeVideo.set(null);
+    this.clearPreviewState();
+    if (this.suspendedLoadedVideoIds) {
+      this.loadedVideoIds.set(this.suspendedLoadedVideoIds);
+      this.suspendedLoadedVideoIds = undefined;
+    }
   }
 
   protected readonly viewerIndex = computed(() => {

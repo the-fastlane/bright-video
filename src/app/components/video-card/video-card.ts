@@ -22,6 +22,7 @@ export type VideoCardPreviewEvent = {
 export class VideoCardComponent {
   readonly video = input.required<VideoRecord>();
   readonly loaded = input(false);
+  readonly mediaDebug = input(false);
   readonly duration = input('');
   readonly previewLoading = input(false);
   readonly open = output<VideoRecord>();
@@ -50,6 +51,22 @@ export class VideoCardComponent {
   protected emitPreviewStop(): void {
     const frame = this.mediaFrame?.nativeElement;
     if (frame) this.previewStop.emit(frame);
+  }
+
+  protected logMediaEvent(event: Event): void {
+    if (!this.mediaDebug()) return;
+    const video = event.currentTarget as HTMLVideoElement;
+    console.log('[media:browser]', event.type, this.video().filename, {
+      readyState: video.readyState,
+      networkState: video.networkState,
+      currentSrc: video.currentSrc,
+      time: Math.round(performance.now()),
+    });
+  }
+
+  protected handleLoadedMetadata(event: Event): void {
+    this.logMediaEvent(event);
+    this.durationLoaded.emit({ video: this.video(), event });
   }
 
   protected stopCardClick(event: Event): void {

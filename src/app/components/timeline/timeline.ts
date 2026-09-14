@@ -34,6 +34,7 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
   readonly activeMonth = input('');
   readonly loadedVideoIds = input.required<Set<string>>();
   readonly videoDurations = input.required<Map<string, number>>();
+  readonly mediaDebug = input(false);
   readonly previewLoadingId = input<string | null>(null);
   readonly openVideo = output<VideoRecord>();
   readonly addToExistingAlbum = output<VideoRecord>();
@@ -237,6 +238,8 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
         for (const entry of entries) {
           const videoId = entry.target.getAttribute('data-video-id');
           if (!videoId) continue;
+          if (this.mediaDebug())
+            console.log('[media:observer]', entry.isIntersecting ? 'enter' : 'leave', videoId);
           if (entry.isIntersecting) nextIds.add(videoId);
           else {
             const video = entry.target.querySelector('video');
@@ -246,7 +249,7 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
         }
         this.loadedVideoIdsChange.emit(nextIds);
       },
-      { rootMargin: '300px 0px', threshold: 0 },
+      { rootMargin: '96px 0px', threshold: 0 },
     );
     for (const card of this.videoCards) {
       if (card.mediaFrame) this.videoObserver.observe(card.mediaFrame.nativeElement);
