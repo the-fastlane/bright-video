@@ -1,13 +1,17 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { createReadStream, promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createReadStream, createWriteStream, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { clearLine, cursorTo, moveCursor } from 'node:readline';
+import { availableParallelism } from 'node:os';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import chokidar from 'chokidar';
 import { ExifTool } from 'exiftool-vendored';
+import ffmpegPath from 'ffmpeg-static';
+import sharp from 'sharp';
 import { CatalogDatabase } from './catalog-db.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,6 +29,9 @@ const databasePath = path.resolve(
   process.env.DATABASE_PATH ??
     path.join(root, 'data', videoSource === 'nas' ? 'bright-video-nas.db' : 'bright-video.db'),
 );
+const thumbnailRoot = path.resolve(
+  process.env.THUMBNAIL_ROOT ?? path.join(path.dirname(databasePath), 'thumbnails'),
+);
 const port = Number(process.env.PORT ?? 3000);
 const mediaExtensions = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv']);
 const sidecarSuffix = '.supplemental-metadata.json';
@@ -33,6 +40,15 @@ const configuredScanConcurrency = Number(process.env.SCAN_CONCURRENCY ?? 4);
 const scanConcurrency = Number.isInteger(configuredScanConcurrency)
   ? Math.max(1, configuredScanConcurrency)
   : 4;
+const configuredThumbnailConcurrency = Number(process.env.THUMBNAIL_CONCURRENCY ?? 12);
+const thumbnailConcurrency = Number.isInteger(configuredThumbnailConcurrency)
+  ? videoSource === 'nas'
+    ? Math.max(1, Math.min(configuredThumbnailConcurrency, 4))
+    : Math.max(1, configuredThumbnailConcurrency)
+  : videoSource === 'nas'
+    ? 4
+    : 12;
+sharp.concurrency(Math.max(1, Math.floor(availableParallelism() / thumbnailConcurrency)));
 const configuredExifToolConcurrency = Number(process.env.EXIFTOOL_CONCURRENCY ?? 4);
 const exifToolConcurrency = Number.isInteger(configuredExifToolConcurrency)
   ? videoSource === 'local'
@@ -241,6 +257,7 @@ let videoWatcher;
 let suppressWatcherChanges = false;
 let terminalProgressDrawn = false;
 let lastTerminalDrawMs = 0;
+let lastNonTtyProgressLogMs = 0;
 const maxRetainedErrorDetails = 200;
 
 function isVideo(file) {
@@ -522,6 +539,8 @@ function createSemaphore(limit) {
   };
 }
 
+const thumbnailGenerationSlots = createSemaphore(thumbnailConcurrency);
+
 const mediaReadSlots = createSemaphore(mediaStreamConcurrency);
 
 function toRelativePath(file) {
@@ -578,6 +597,65 @@ function recordFromMetadata(file, metadata, stat, mediaMetadata) {
   };
 }
 
+function thumbnailPathFor(relativePath) {
+  return `${createHash('sha256').update(String(relativePath)).digest('hex')}.webp`;
+}
+
+async function createThumbnail(file, relativePath, shouldCreate) {
+  const thumbnailPath = thumbnailPathFor(relativePath);
+  const output = path.join(thumbnailRoot, thumbnailPath);
+  if (!shouldCreate) return thumbnailPath;
+  await fs.mkdir(thumbnailRoot, { recursive: true });
+  const releaseThumbnailSlot = await thumbnailGenerationSlots.acquire();
+  const ffmpeg = spawn(ffmpegPath, [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-ss',
+    '1',
+    '-i',
+    file,
+    '-frames:v',
+    '1',
+    '-f',
+    'image2pipe',
+    '-vcodec',
+    'png',
+    '-',
+  ]);
+  const transformer = sharp()
+    .resize({ width: 320, withoutEnlargement: true })
+    .webp({ quality: 75, effort: 2 });
+  let errorOutput = '';
+  ffmpeg.stderr.on('data', (chunk) => (errorOutput += chunk.toString()));
+  const ffmpegExit = new Promise((resolve, reject) => {
+    ffmpeg.once('error', reject);
+    ffmpeg.once('exit', (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(errorOutput.trim() || `ffmpeg exited with ${code ?? signal}`));
+    });
+  });
+  let processing;
+  try {
+    processing = pipeline(ffmpeg.stdout, transformer, createWriteStream(output));
+    await Promise.all([processing, ffmpegExit]);
+    return thumbnailPath;
+  } catch (error) {
+    ffmpeg.kill('SIGTERM');
+    await processing?.catch(() => {});
+    await fs.rm(output, { force: true });
+    console.warn(`Thumbnail skipped for ${relativePath}: ${error.message}`);
+    return null;
+  } finally {
+    releaseThumbnailSlot();
+  }
+}
+
+async function clearThumbnailStorage() {
+  await fs.rm(thumbnailRoot, { recursive: true, force: true });
+  await fs.mkdir(thumbnailRoot, { recursive: true });
+}
+
 function recordFromDatabase(row) {
   const captureDate = row.capture_date;
   return {
@@ -586,6 +664,9 @@ function recordFromDatabase(row) {
     filename: row.filename,
     path: row.file_path,
     url: `/videos/${row.file_path.split('/').map(encodeURIComponent).join('/')}`,
+    thumbnailUrl: row.thumbnail_path
+      ? `/thumbnails/${encodeURIComponent(row.thumbnail_path)}`
+      : undefined,
     captureDate,
     year: captureDate ? new Date(captureDate).getUTCFullYear() : null,
     month: captureDate ? monthFormatter.format(new Date(captureDate)) : 'Undated',
@@ -610,13 +691,19 @@ async function readRecord(file, onPhase = () => {}, force = false, precomputed =
     const signature =
       precomputed?.signature ??
       fileSignature(stat, (await firstExistingSidecarStat(file, precomputed?.knownFiles)).stat);
+    const existing = database.getVideo(toRelativePath(file));
+    const expectedThumbnailPath = thumbnailPathFor(toRelativePath(file));
     phase = 'database';
     onPhase(phase);
-    if (!precomputed?.stale) {
-      const existing = database.getVideo(toRelativePath(file));
-      if (!force && existing?.file_signature === signature && existing.width && existing.height)
-        return { ok: true };
-    }
+    if (
+      !precomputed?.stale &&
+      !force &&
+      existing?.file_signature === signature &&
+      existing.width &&
+      existing.height &&
+      existing.thumbnail_path === expectedThumbnailPath
+    )
+      return { ok: true };
     phase = 'metadata';
     onPhase(phase);
     const mediaMetadata = await readMediaMetadata(file);
@@ -625,14 +712,23 @@ async function readRecord(file, onPhase = () => {}, force = false, precomputed =
     const { metadata, path: sidecar, written } = await readSidecar(file, stat, mediaMetadata);
     phase = 'database';
     onPhase(phase);
-    // An untouched sidecar still has the stat the pre-scan pass took, so skip a second lookup.
     const reusableSidecarStat =
       !written && sidecar && precomputed?.sidecarPath === sidecar ? precomputed.sidecarStat : null;
     const sidecarStat =
       reusableSidecarStat ?? (sidecar ? await fs.stat(sidecar).catch(() => null) : null);
+    const relativePath = toRelativePath(file);
+    const thumbnailPath = await createThumbnail(
+      file,
+      relativePath,
+      force ||
+        existing?.file_signature !== signature ||
+        !existing?.thumbnail_path ||
+        existing.thumbnail_path !== thumbnailPathFor(relativePath),
+    );
     database.upsertVideo({
       ...recordFromMetadata(file, metadata, stat, mediaMetadata),
       fileSignature: fileSignature(stat, sidecarStat),
+      thumbnailPath,
     });
     return { ok: true };
   } catch (error) {
@@ -680,9 +776,9 @@ function updateScanTerminal(status, done = false) {
     }
     return;
   }
-  if (terminalProgressDrawn) process.stdout.write('\x1b[1A');
-  process.stdout.write(`\x1b[2K\r${terminalSummary}${done ? '\n' : ''}`);
-  terminalProgressDrawn = !done;
+  if (!done && now - lastNonTtyProgressLogMs < 1000) return;
+  lastNonTtyProgressLogMs = now;
+  process.stdout.write(`${terminalSummary}\n`);
 }
 
 function estimatedRemainingMs(status) {
@@ -707,6 +803,7 @@ async function scanLibrary(changedPaths = null, force = false, contexts = null) 
     void videoWatcher.close();
     videoWatcher = undefined;
   }
+  if (force && !changedPaths) await clearThumbnailStorage();
   scanStatus = {
     active: true,
     mode: force ? 'reindex' : 'scan',
@@ -960,6 +1057,29 @@ const videoContentTypes = {
   '.mkv': 'video/x-matroska',
   '.avi': 'video/x-msvideo',
 };
+
+async function serveThumbnail(request, response, pathname) {
+  if (request.method !== 'GET' && request.method !== 'HEAD')
+    return json(response, 405, { error: 'Method not allowed' });
+  const relativePath = decodeURIComponent(pathname.slice('/thumbnails/'.length));
+  const file = path.resolve(thumbnailRoot, relativePath);
+  if (!file.startsWith(`${thumbnailRoot}${path.sep}`))
+    return json(response, 403, { error: 'Forbidden path' });
+  try {
+    const stat = await fs.stat(file);
+    if (!stat.isFile()) return json(response, 404, { error: 'Thumbnail not found' });
+    response.writeHead(200, {
+      'content-type': 'image/webp',
+      'content-length': stat.size,
+      'cache-control': 'public, max-age=31536000, immutable',
+    });
+    if (request.method === 'HEAD') return response.end();
+    await pipeline(createReadStream(file), response);
+  } catch (error) {
+    if (isClientAbort(error) || response.headersSent || response.destroyed) return;
+    return json(response, 404, { error: 'Thumbnail not found' });
+  }
+}
 
 function isClientAbort(error) {
   return (
@@ -1227,6 +1347,8 @@ const server = createServer(async (request, response) => {
       void scanLibrary(null, true);
       return json(response, 202, { started: true, mode: 'reindex', source: videoSource });
     }
+    if (url.pathname.startsWith('/thumbnails/'))
+      return serveThumbnail(request, response, url.pathname);
     if (url.pathname.startsWith('/videos/')) return serveVideo(request, response, url.pathname);
     if (await serveStatic(request, response, url.pathname)) return;
     return json(response, 404, { error: 'Not found' });

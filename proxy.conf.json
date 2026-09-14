@@ -8,5 +8,10 @@
     "target": "http://localhost:4318",
     "secure": false,
     "changeOrigin": true
+  },
+  "/thumbnails": {
+    "target": "http://localhost:4318",
+    "secure": false,
+    "changeOrigin": true
   }
 }

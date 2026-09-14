@@ -25,6 +25,11 @@ export class VideoViewerComponent implements OnDestroy {
     video.load();
   }
 
+  protected startAtOneSecond(event: Event): void {
+    const video = event.currentTarget as HTMLVideoElement;
+    if (video.duration > 1) video.currentTime = 1;
+  }
+
   ngOnDestroy(): void {
     this.stopMedia();
   }

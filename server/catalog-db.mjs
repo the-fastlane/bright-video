@@ -24,7 +24,8 @@ const schema = `
     metadata_warning TEXT,
     metadata_source TEXT,
     metadata_updated_at TEXT NOT NULL,
-    file_signature TEXT NOT NULL
+    file_signature TEXT NOT NULL,
+    thumbnail_path TEXT
   );
 
   CREATE INDEX IF NOT EXISTS videos_capture_date_idx ON videos(capture_date);
@@ -144,12 +145,15 @@ export class CatalogDatabase {
     this.#db = new DatabaseSync(file);
     this.#db.exec(tuning);
     this.#db.exec(schema);
+    const columns = this.#db.prepare('PRAGMA table_info(videos)').all();
+    if (!columns.some((column) => column.name === 'thumbnail_path'))
+      this.#db.exec('ALTER TABLE videos ADD COLUMN thumbnail_path TEXT');
     this.#upsertVideo = this.#db.prepare(`
       INSERT INTO videos (
         file_path, filename, title, description, format, file_size, modified_at,
         capture_date, duration_ms, width, height, latitude, longitude, altitude,
-        metadata_warning, metadata_source, metadata_updated_at, file_signature
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        metadata_warning, metadata_source, metadata_updated_at, file_signature, thumbnail_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(file_path) DO UPDATE SET
         filename = excluded.filename,
         title = excluded.title,
@@ -167,7 +171,8 @@ export class CatalogDatabase {
         metadata_warning = excluded.metadata_warning,
         metadata_source = excluded.metadata_source,
         metadata_updated_at = excluded.metadata_updated_at,
-        file_signature = excluded.file_signature
+        file_signature = excluded.file_signature,
+        thumbnail_path = excluded.thumbnail_path
       RETURNING id
     `);
     this.#deleteVideo = this.#db.prepare('DELETE FROM videos WHERE file_path = ?');
@@ -225,6 +230,7 @@ export class CatalogDatabase {
       video.metadataSource ?? 'sidecar',
       now(),
       video.fileSignature,
+      video.thumbnailPath ?? null,
     );
     const timestamp = now();
     this.#deleteSearch.run(row.id);

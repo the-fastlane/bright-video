@@ -670,7 +670,7 @@ export class App implements OnInit {
     this.previewLoading.set(video.id);
     this.previewTimer = setTimeout(() => {
       element.muted = true;
-      element.currentTime = 0;
+      element.currentTime = 1;
       element
         .play()
         .then(() => {
@@ -688,7 +688,7 @@ export class App implements OnInit {
     const element = frame.querySelector('video');
     if (element) {
       element.pause();
-      element.currentTime = 0;
+      element.currentTime = 1;
     }
     this.clearPreviewState();
   }

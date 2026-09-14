@@ -4,11 +4,9 @@ const children = [];
 
 function start(command, args) {
   const child = spawn(command, args, {
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: 'inherit',
     env: process.env,
   });
-  child.stdout.pipe(process.stdout);
-  child.stderr.pipe(process.stderr);
   children.push(child);
   return child;
 }

@@ -18,7 +18,14 @@
     <button class="viewer-close" type="button" aria-label="Close viewer" (click)="closeViewer()">
       ×
     </button>
-    <video #viewerVideo [src]="video().url" controls autoplay playsinline></video>
+    <video
+      #viewerVideo
+      [src]="video().url"
+      controls
+      autoplay
+      playsinline
+      (loadedmetadata)="startAtOneSecond($event)"
+    ></video>
     <div class="viewer-details">
       <div>
         <span class="section-kicker">{{ dateLabel() }}</span>
