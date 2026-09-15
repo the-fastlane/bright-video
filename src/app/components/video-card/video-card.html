@@ -13,23 +13,34 @@
     (mouseenter)="emitPreviewStart()"
     (mouseleave)="emitPreviewStop()"
   >
-    @if (loaded()) {
-      <video
-        [src]="video().url"
-        preload="auto"
-        playsinline
-        muted
-        (loadedmetadata)="durationLoaded.emit({ video: video(), event: $event })"
-      ></video>
+    @if (video().thumbnailUrl && !thumbnailUnavailable()) {
+      <img [src]="video().thumbnailUrl" [alt]="video().title" (error)="handleThumbnailError()" />
     }
+    <video
+      [attr.src]="loaded() || previewActive() || thumbnailUnavailable() ? video().url : null"
+      [hidden]="video().thumbnailUrl && !previewActive() && !thumbnailUnavailable()"
+      preload="metadata"
+      playsinline
+      muted
+      disableremoteplayback
+      disablepictureinpicture
+      (loadstart)="logMediaEvent($event)"
+      (loadedmetadata)="handleLoadedMetadata($event)"
+      (progress)="logMediaEvent($event)"
+      (canplay)="logMediaEvent($event)"
+      (stalled)="logMediaEvent($event)"
+      (suspend)="logMediaEvent($event)"
+      (abort)="logMediaEvent($event)"
+      (error)="logMediaEvent($event)"
+    ></video>
     <div class="media-shade"></div>
-    <div class="album-add-control" [class.open]="menuOpen" (click)="stopCardClick($event)">
+    <div class="album-add-control" [class.open]="menuOpen()" (click)="stopCardClick($event)">
       <button
         class="album-add-button"
         type="button"
         aria-label="Add video to an album"
         title="Add to album"
-        [attr.aria-expanded]="menuOpen"
+        [attr.aria-expanded]="menuOpen()"
         (click)="toggleAlbumMenu($event)"
       >
         <span aria-hidden="true">+</span>

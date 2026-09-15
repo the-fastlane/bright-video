@@ -2,7 +2,9 @@
 
 BrightVideo is a self-hosted video library for browsing, searching, filtering, and organizing personal videos. It uses the filesystem as the media source and a lightweight SQLite database for indexed metadata and albums.
 
-The application does not generate thumbnails or require a separate media-processing service. Video previews and playback are handled by the browser, keeping the server lightweight and responsive.
+The application generates small WebP thumbnails during indexing and stores them beside the SQLite catalog. Browsing the timeline uses these local thumbnails; the source video is only requested when a preview is hovered or playback is opened. If thumbnail generation is unavailable, the browser falls back to the video's first frame.
+
+Thumbnails use FFmpeg for frame extraction and Sharp for resizing and WebP encoding.
 
 ## Features
 
@@ -103,7 +105,7 @@ docker compose up -d
 
 Then open `http://<synology-ip>:8420/` in a browser.
 
-The media directory is mounted read-only by default. This prevents the application from modifying the source library. The catalog directory must remain writable so SQLite can store the index, albums, and metadata cache.
+The media directory is mounted read-only by default. This prevents the application from modifying the source library. The catalog directory must remain writable so SQLite, generated thumbnails, and metadata cache can be stored.
 
 ## Updating
 
@@ -137,17 +139,19 @@ The application also reads media metadata through ExifTool. Files without supple
 
 The container supports these environment variables:
 
-| Variable            | Default                         | Purpose                           |
-| ------------------- | ------------------------------- | --------------------------------- |
-| `PORT`              | `3000`                          | HTTP port inside the container    |
-| `VIDEO_ROOT`        | `/data/videos`                  | Mounted video library             |
-| `VIDEO_SOURCE`      | `local`                         | Select `local` or `nas` media     |
-| `NAS_VIDEO_ROOT`    | `/mnt/synology_nfs_share`       | Host-mounted Synology NFS path    |
-| `NAS_MOUNT_SOURCE`  |                                 | NFS server and export             |
-| `NAS_MOUNT_PATH`    |                                 | Local NFS mount path              |
-| `NAS_MOUNT_OPTIONS` |                                 | Comma-separated NFS mount options |
-| `SCAN_CONCURRENCY`  | `4`                             | Concurrent metadata scan workers  |
-| `DATABASE_PATH`     | `/data/catalog/bright-video.db` | SQLite catalog file               |
+| Variable                | Default                         | Purpose                                       |
+| ----------------------- | ------------------------------- | --------------------------------------------- |
+| `PORT`                  | `3000`                          | HTTP port inside the container                |
+| `VIDEO_ROOT`            | `/data/videos`                  | Mounted video library                         |
+| `VIDEO_SOURCE`          | `local`                         | Select `local` or `nas` media                 |
+| `NAS_VIDEO_ROOT`        | `/mnt/synology_nfs_share`       | Host-mounted Synology NFS path                |
+| `NAS_MOUNT_SOURCE`      |                                 | NFS server and export                         |
+| `NAS_MOUNT_PATH`        |                                 | Local NFS mount path                          |
+| `NAS_MOUNT_OPTIONS`     |                                 | Comma-separated NFS mount options             |
+| `SCAN_CONCURRENCY`      | `4`                             | Concurrent metadata scan workers              |
+| `THUMBNAIL_CONCURRENCY` | `12` (local), `4` (NAS)         | Concurrent AVIF encoding workers              |
+| `DATABASE_PATH`         | `/data/catalog/bright-video.db` | SQLite catalog file                           |
+| `THUMBNAIL_ROOT`        | next to `DATABASE_PATH`         | Local directory for generated AVIF thumbnails |
 
 For a host-mounted Synology NFS share, mount the share on the machine running
 BrightVideo first, then set `VIDEO_SOURCE=nas` and point `NAS_VIDEO_ROOT` at

@@ -7,7 +7,7 @@
         <p>Preparing your local library.</p>
       </div>
     } @else {
-      @for (yearGroup of yearGroups(); track yearGroup.year) {
+      @for (yearGroup of yearGroups(); track yearGroup.year; let yearIndex = $index) {
         <section class="year-section">
           <span class="section-year">{{ yearGroup.year }}</span>
           <div class="year-months">
@@ -28,12 +28,16 @@
                     >
                   </div>
                 </div>
-                @if ($index < 8 || renderedSectionKeys().has(group.key)) {
+                @if (
+                  (!virtualizationReady() && yearIndex === 0 && $index < 8) ||
+                  renderedSectionKeys().has(group.key)
+                ) {
                   <div #videoGrid class="video-grid">
                     @for (video of group.videos; track video.id) {
                       <app-video-card
                         [video]="video"
                         [loaded]="loadedVideoIds().has(video.id)"
+                        [mediaDebug]="mediaDebug()"
                         [duration]="formatDuration(video)"
                         [previewLoading]="previewLoadingId() === video.id"
                         (open)="openVideo.emit($event)"

@@ -4,6 +4,7 @@ export interface VideoRecord {
   filename: string;
   path: string;
   url: string;
+  thumbnailUrl?: string;
   captureDate: string;
   year: number;
   month: string;

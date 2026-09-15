@@ -1,4 +1,4 @@
-<div class="viewer-backdrop" role="presentation" (click)="close.emit()">
+<div class="viewer-backdrop" role="presentation" (click)="closeViewer()">
   <section
     class="viewer"
     role="dialog"
@@ -11,14 +11,21 @@
       type="button"
       aria-label="Previous video"
       [disabled]="!canGoPrevious()"
-      (click)="previous.emit()"
+      (click)="navigate('previous')"
     >
       ‹
     </button>
-    <button class="viewer-close" type="button" aria-label="Close viewer" (click)="close.emit()">
+    <button class="viewer-close" type="button" aria-label="Close viewer" (click)="closeViewer()">
       ×
     </button>
-    <video [src]="video().url" controls autoplay playsinline></video>
+    <video
+      #viewerVideo
+      [src]="video().url"
+      controls
+      autoplay
+      playsinline
+      (loadedmetadata)="startAtOneSecond($event)"
+    ></video>
     <div class="viewer-details">
       <div>
         <span class="section-kicker">{{ dateLabel() }}</span>
@@ -30,7 +37,7 @@
       type="button"
       aria-label="Next video"
       [disabled]="!canGoNext()"
-      (click)="next.emit()"
+      (click)="navigate('next')"
     >
       ›
     </button>

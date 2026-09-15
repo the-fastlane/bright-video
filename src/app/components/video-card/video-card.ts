@@ -1,4 +1,12 @@
-import { Component, ElementRef, input, output, ViewChild } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  input,
+  output,
+  signal,
+  ViewChild,
+} from '@angular/core';
 import { VideoRecord } from '../../models/video-record';
 
 export type VideoCardPreviewEvent = {
@@ -9,10 +17,12 @@ export type VideoCardPreviewEvent = {
 @Component({
   selector: 'app-video-card',
   templateUrl: './video-card.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class VideoCardComponent {
   readonly video = input.required<VideoRecord>();
   readonly loaded = input(false);
+  readonly mediaDebug = input(false);
   readonly duration = input('');
   readonly previewLoading = input(false);
   readonly open = output<VideoRecord>();
@@ -22,7 +32,9 @@ export class VideoCardComponent {
   readonly previewStop = output<HTMLElement>();
   readonly durationLoaded = output<{ video: VideoRecord; event: Event }>();
   readonly menuOpened = output<VideoCardComponent | null>();
-  protected menuOpen = false;
+  protected readonly menuOpen = signal(false);
+  protected readonly previewActive = signal(false);
+  protected readonly thumbnailUnavailable = signal(false);
 
   protected aspectRatio(): string {
     const { width, height } = this.video();
@@ -34,13 +46,37 @@ export class VideoCardComponent {
   readonly mediaFrame?: ElementRef<HTMLElement>;
 
   protected emitPreviewStart(): void {
+    this.previewActive.set(Boolean(this.video().thumbnailUrl));
     const frame = this.mediaFrame?.nativeElement;
     if (frame) this.previewStart.emit({ video: this.video(), frame });
   }
 
   protected emitPreviewStop(): void {
+    this.previewActive.set(false);
     const frame = this.mediaFrame?.nativeElement;
     if (frame) this.previewStop.emit(frame);
+  }
+
+  protected handleThumbnailError(): void {
+    this.thumbnailUnavailable.set(true);
+  }
+
+  protected logMediaEvent(event: Event): void {
+    if (!this.mediaDebug()) return;
+    const video = event.currentTarget as HTMLVideoElement;
+    console.log('[media:browser]', event.type, this.video().filename, {
+      readyState: video.readyState,
+      networkState: video.networkState,
+      currentSrc: video.currentSrc,
+      time: Math.round(performance.now()),
+    });
+  }
+
+  protected handleLoadedMetadata(event: Event): void {
+    this.logMediaEvent(event);
+    const video = event.currentTarget as HTMLVideoElement;
+    if (!this.previewActive() && video.duration > 1) video.currentTime = 1;
+    this.durationLoaded.emit({ video: this.video(), event });
   }
 
   protected stopCardClick(event: Event): void {
@@ -49,13 +85,14 @@ export class VideoCardComponent {
 
   protected toggleAlbumMenu(event: Event): void {
     this.stopCardClick(event);
-    this.menuOpen = !this.menuOpen;
-    this.menuOpened.emit(this.menuOpen ? this : null);
+    const next = !this.menuOpen();
+    this.menuOpen.set(next);
+    this.menuOpened.emit(next ? this : null);
   }
 
   closeAlbumMenu(): void {
-    if (!this.menuOpen) return;
-    this.menuOpen = false;
+    if (!this.menuOpen()) return;
+    this.menuOpen.set(false);
     this.menuOpened.emit(null);
   }
 }

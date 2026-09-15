@@ -1,5 +1,6 @@
 import {
   AfterViewInit,
+  ChangeDetectionStrategy,
   Component,
   DestroyRef,
   ElementRef,
@@ -20,8 +21,8 @@ import { VideoCardComponent, VideoCardPreviewEvent } from '../video-card/video-c
 @Component({
   selector: 'app-timeline',
   imports: [VideoCardComponent],
-  host: { '(window:scroll)': 'handleWindowScroll()' },
   templateUrl: './timeline.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class TimelineComponent implements AfterViewInit, OnDestroy {
   readonly yearGroups = input.required<TimelineYearGroup[]>();
@@ -33,6 +34,7 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
   readonly activeMonth = input('');
   readonly loadedVideoIds = input.required<Set<string>>();
   readonly videoDurations = input.required<Map<string, number>>();
+  readonly mediaDebug = input(false);
   readonly previewLoadingId = input<string | null>(null);
   readonly openVideo = output<VideoRecord>();
   readonly addToExistingAlbum = output<VideoRecord>();
@@ -52,11 +54,11 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
   protected readonly dateRailHasMore = signal(true);
   protected readonly renderedSectionKeys = signal<Set<string>>(new Set());
   protected readonly sectionHeights = signal<Map<string, number>>(new Map());
+  protected readonly virtualizationReady = signal(false);
   private videoObserver?: IntersectionObserver;
   private dateObserver?: IntersectionObserver;
   private sectionObserver?: IntersectionObserver;
   private gridResizeObserver?: ResizeObserver;
-  private virtualScrollFrame?: number;
   private openCard?: VideoCardComponent;
   private readonly destroyRef = inject(DestroyRef);
   private readonly renderer = inject(Renderer2);
@@ -109,11 +111,14 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
     this.dateObserver?.disconnect();
     this.sectionObserver?.disconnect();
     this.gridResizeObserver?.disconnect();
-    if (this.virtualScrollFrame !== undefined) cancelAnimationFrame(this.virtualScrollFrame);
   }
 
   protected formatDuration(video: VideoRecord): string {
-    const duration = this.videoDurations().get(video.id);
+    // Prefer the indexed duration so badges appear without waiting on a media metadata fetch.
+    const duration =
+      video.durationMs !== null && video.durationMs !== undefined
+        ? video.durationMs / 1000
+        : this.videoDurations().get(video.id);
     if (duration === undefined) return '';
     const totalSeconds = Math.round(duration);
     const seconds = totalSeconds % 60;
@@ -143,14 +148,6 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
     return this.sectionHeights().get(key) ?? this.estimatedGridHeight(videoCount);
   }
 
-  protected handleWindowScroll(): void {
-    if (this.virtualScrollFrame !== undefined) return;
-    this.virtualScrollFrame = requestAnimationFrame(() => {
-      this.virtualScrollFrame = undefined;
-      this.updateRenderedSections(document.querySelectorAll<HTMLElement>('[data-virtual-section]'));
-    });
-  }
-
   private observeDaySections(): void {
     if (!this.daySections || !('IntersectionObserver' in window)) return;
     this.dateObserver?.disconnect();
@@ -169,8 +166,10 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
 
   private observeVirtualSections(): void {
     const sections = document.querySelectorAll<HTMLElement>('[data-virtual-section]');
-    if (!sections.length || !('IntersectionObserver' in window)) {
+    if (!sections.length) return;
+    if (!('IntersectionObserver' in window)) {
       this.renderedSectionKeys.set(new Set([...sections].map((section) => section.id)));
+      this.virtualizationReady.set(true);
       return;
     }
     this.sectionObserver?.disconnect();
@@ -191,17 +190,7 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
       { rootMargin: '1200px 0px', threshold: 0 },
     );
     for (const section of sections) this.sectionObserver.observe(section);
-  }
-
-  private updateRenderedSections(sections: NodeListOf<HTMLElement>): void {
-    const nextKeys = new Set<string>();
-    for (const section of sections) {
-      const bounds = section.getBoundingClientRect();
-      if (bounds.bottom >= -1200 && bounds.top <= window.innerHeight + 1200) {
-        nextKeys.add(section.id);
-      }
-    }
-    this.renderedSectionKeys.set(nextKeys);
+    this.virtualizationReady.set(true);
   }
 
   private observeGridSizes(): void {
@@ -249,6 +238,8 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
         for (const entry of entries) {
           const videoId = entry.target.getAttribute('data-video-id');
           if (!videoId) continue;
+          if (this.mediaDebug())
+            console.log('[media:observer]', entry.isIntersecting ? 'enter' : 'leave', videoId);
           if (entry.isIntersecting) nextIds.add(videoId);
           else {
             const video = entry.target.querySelector('video');
@@ -258,7 +249,7 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
         }
         this.loadedVideoIdsChange.emit(nextIds);
       },
-      { rootMargin: '300px 0px', threshold: 0 },
+      { rootMargin: '96px 0px', threshold: 0 },
     );
     for (const card of this.videoCards) {
       if (card.mediaFrame) this.videoObserver.observe(card.mediaFrame.nativeElement);
