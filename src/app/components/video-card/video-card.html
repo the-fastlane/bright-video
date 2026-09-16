@@ -17,7 +17,11 @@
       <img [src]="video().thumbnailUrl" [alt]="video().title" (error)="handleThumbnailError()" />
     }
     <video
-      [attr.src]="loaded() || previewActive() || thumbnailUnavailable() ? video().url : null"
+      [attr.src]="
+        previewActive() || ((!video().thumbnailUrl || thumbnailUnavailable()) && loaded())
+          ? video().url
+          : null
+      "
       [hidden]="video().thumbnailUrl && !previewActive() && !thumbnailUnavailable()"
       preload="metadata"
       playsinline

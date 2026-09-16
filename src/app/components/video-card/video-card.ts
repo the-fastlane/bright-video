@@ -46,7 +46,7 @@ export class VideoCardComponent {
   readonly mediaFrame?: ElementRef<HTMLElement>;
 
   protected emitPreviewStart(): void {
-    this.previewActive.set(Boolean(this.video().thumbnailUrl));
+    this.previewActive.set(true);
     const frame = this.mediaFrame?.nativeElement;
     if (frame) this.previewStart.emit({ video: this.video(), frame });
   }
@@ -54,7 +54,15 @@ export class VideoCardComponent {
   protected emitPreviewStop(): void {
     this.previewActive.set(false);
     const frame = this.mediaFrame?.nativeElement;
-    if (frame) this.previewStop.emit(frame);
+    if (frame) {
+      const video = frame.querySelector('video');
+      if (video && this.video().thumbnailUrl && !this.thumbnailUnavailable()) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      }
+      this.previewStop.emit(frame);
+    }
   }
 
   protected handleThumbnailError(): void {
@@ -75,7 +83,7 @@ export class VideoCardComponent {
   protected handleLoadedMetadata(event: Event): void {
     this.logMediaEvent(event);
     const video = event.currentTarget as HTMLVideoElement;
-    if (!this.previewActive() && video.duration > 1) video.currentTime = 1;
+    if (video.duration > 1) video.currentTime = 1;
     this.durationLoaded.emit({ video: this.video(), event });
   }
 
