@@ -7,6 +7,7 @@
     "api": "node --env-file=.env server/index.mjs",
     "start:local": "node --env-file=.env server/index.mjs",
     "test:reindex": "node server/reindex-smoke.mjs",
+    "benchmark": "node --env-file=.env server/benchmark-scan.mjs",
     "start:ui": "PATH=\"$HOME/.nvm/versions/node/v22.22.3/bin:$PATH\" ng serve",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",

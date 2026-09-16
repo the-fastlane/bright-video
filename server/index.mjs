@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream, createWriteStream, promises as fs } from 'node:fs';
+import { createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { clearLine, cursorTo, moveCursor } from 'node:readline';
 import { availableParallelism } from 'node:os';
@@ -9,11 +9,10 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import chokidar from 'chokidar';
-import { ExifTool } from 'exiftool-vendored';
 import ffmpegPath from 'ffmpeg-static';
-import sharp from 'sharp';
 import { CatalogDatabase } from './catalog-db.mjs';
 
+const isDarwin = process.platform === 'darwin';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const staticRoot = path.join(root, 'dist', 'bright-video', 'browser');
 const videoSource = (process.env.VIDEO_SOURCE ?? 'local').trim().toLowerCase();
@@ -36,27 +35,18 @@ const port = Number(process.env.PORT ?? 3000);
 const mediaExtensions = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv']);
 const sidecarSuffix = '.supplemental-metadata.json';
 const metadataSignatureVersion = 'media-metadata-v3';
-const configuredScanConcurrency = Number(process.env.SCAN_CONCURRENCY ?? 4);
+const configuredScanConcurrency = Number(process.env.SCAN_CONCURRENCY ?? 12);
 const scanConcurrency = Number.isInteger(configuredScanConcurrency)
   ? Math.max(1, configuredScanConcurrency)
-  : 4;
+  : 12;
 const configuredThumbnailConcurrency = Number(process.env.THUMBNAIL_CONCURRENCY ?? 12);
 const thumbnailConcurrency = Number.isInteger(configuredThumbnailConcurrency)
-  ? videoSource === 'nas'
-    ? Math.max(1, Math.min(configuredThumbnailConcurrency, 4))
-    : Math.max(1, configuredThumbnailConcurrency)
-  : videoSource === 'nas'
-    ? 4
-    : 12;
-sharp.concurrency(Math.max(1, Math.floor(availableParallelism() / thumbnailConcurrency)));
-const configuredExifToolConcurrency = Number(process.env.EXIFTOOL_CONCURRENCY ?? 4);
+  ? Math.max(1, configuredThumbnailConcurrency)
+  : 12;
+const configuredExifToolConcurrency = Number(process.env.EXIFTOOL_CONCURRENCY ?? 12);
 const exifToolConcurrency = Number.isInteger(configuredExifToolConcurrency)
-  ? videoSource === 'local'
-    ? scanConcurrency
-    : Math.max(1, Math.min(scanConcurrency, configuredExifToolConcurrency))
-  : videoSource === 'local'
-    ? scanConcurrency
-    : Math.min(scanConcurrency, 4);
+  ? Math.max(1, configuredExifToolConcurrency)
+  : 12;
 // A NAS read of a large moov atom regularly exceeds a second; too short a timeout means the
 // file is never persisted and gets retried on every future scan.
 const configuredScanFileTimeout = Number(process.env.SCAN_FILE_TIMEOUT_MS ?? 5_000);
@@ -93,17 +83,11 @@ const watchIntervalMs = Number.isFinite(configuredWatchInterval)
 // network. -fast yields byte-identical tags for every format here; -fast2 drops QuickTime metadata
 // entirely, so it must not be used.
 const exiftoolSpeedArgs =
-  videoSource === 'nas' && (process.env.EXIFTOOL_FAST ?? 'true').trim().toLowerCase() !== 'false'
+  videoSource === 'nas' || (process.env.EXIFTOOL_FAST ?? 'true').trim().toLowerCase() !== 'false'
     ? ['-fast']
     : [];
 const database = new CatalogDatabase(databasePath);
 const exiftoolPath = path.resolve(root, 'node_modules', 'exiftool-vendored.pl', 'bin', 'exiftool');
-const exiftool = new ExifTool({
-  maxProcs: exifToolConcurrency,
-  taskTimeoutMillis: scanFileTimeoutMs,
-  spawnTimeoutMillis: scanFileTimeoutMs,
-  taskRetries: 0,
-});
 
 class ExifToolWorker {
   child;
@@ -181,6 +165,7 @@ class ExifToolWorker {
       this.child.stdin.write(
         [
           '-json',
+          ...exiftoolSpeedArgs,
           '-ImageWidth',
           '-ImageHeight',
           '-Rotation',
@@ -219,10 +204,7 @@ class ExifToolWorker {
   }
 }
 
-const metadataTools =
-  videoSource === 'local'
-    ? Array.from({ length: exifToolConcurrency }, () => new ExifToolWorker())
-    : [];
+const metadataTools = Array.from({ length: exifToolConcurrency }, () => new ExifToolWorker());
 
 function metadataToolForFile() {
   return metadataTools.reduce((leastBusy, tool) =>
@@ -352,26 +334,7 @@ function hasQuarterTurn(value) {
 
 async function readMediaMetadata(file) {
   try {
-    const tags =
-      videoSource === 'local'
-        ? (await metadataToolForFile().read(file))[0]
-        : await exiftool.read(file, {
-            readArgs: [
-              ...exiftoolSpeedArgs,
-              '-ImageWidth',
-              '-ImageHeight',
-              '-Rotation',
-              '-VideoRotation',
-              '-Duration',
-              '-CreateDate',
-              '-MediaCreateDate',
-              '-TrackCreateDate',
-              '-CreationDate',
-              '-GPSLatitude',
-              '-GPSLongitude',
-              '-GPSAltitude',
-            ],
-          });
+    const tags = (await metadataToolForFile().read(file))[0] ?? {};
     const rawWidth = Number.isFinite(Number(tags.ImageWidth)) ? Number(tags.ImageWidth) : null;
     const rawHeight = Number.isFinite(Number(tags.ImageHeight)) ? Number(tags.ImageHeight) : null;
     const rotated = hasQuarterTurn(tags.Rotation ?? tags.VideoRotation);
@@ -475,11 +438,25 @@ async function readSidecar(file, stat, mediaMetadata) {
 }
 
 async function walk(directory) {
-  const entries = await fs.readdir(directory, { withFileTypes: true, recursive: true });
   const files = [];
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    files.push(path.join(entry.parentPath ?? entry.path ?? directory, entry.name));
+  const queue = [directory];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    let entries = [];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || entry.name.startsWith('@')) continue;
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(fullPath);
+      } else if (entry.isFile()) {
+        files.push(fullPath);
+      }
+    }
   }
   return files;
 }
@@ -607,42 +584,54 @@ async function createThumbnail(file, relativePath, shouldCreate) {
   if (!shouldCreate) return thumbnailPath;
   await fs.mkdir(thumbnailRoot, { recursive: true });
   const releaseThumbnailSlot = await thumbnailGenerationSlots.acquire();
-  const ffmpeg = spawn(ffmpegPath, [
-    '-hide_banner',
-    '-loglevel',
-    'error',
-    '-ss',
-    '1',
-    '-i',
-    file,
-    '-frames:v',
-    '1',
-    '-f',
-    'image2pipe',
-    '-vcodec',
-    'png',
-    '-',
-  ]);
-  const transformer = sharp()
-    .resize({ width: 320, withoutEnlargement: true })
-    .webp({ quality: 75, effort: 2 });
-  let errorOutput = '';
-  ffmpeg.stderr.on('data', (chunk) => (errorOutput += chunk.toString()));
-  const ffmpegExit = new Promise((resolve, reject) => {
-    ffmpeg.once('error', reject);
-    ffmpeg.once('exit', (code, signal) => {
-      if (code === 0) resolve();
-      else reject(new Error(errorOutput.trim() || `ffmpeg exited with ${code ?? signal}`));
+
+  const spawnFfmpeg = (useHwaccel, seekTime = '1') => {
+    const hwaccel = useHwaccel && isDarwin ? ['-hwaccel', 'videotoolbox'] : [];
+    return spawn(ffmpegPath, [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      ...hwaccel,
+      '-ss',
+      seekTime,
+      '-i',
+      file,
+      '-vf',
+      'scale=320:-1:force_original_aspect_ratio=decrease',
+      '-frames:v',
+      '1',
+      '-c:v',
+      'libwebp',
+      '-quality',
+      '75',
+      '-compression_level',
+      '2',
+      '-y',
+      output,
+    ]);
+  };
+
+  const runFfmpeg = (useHwaccel, seekTime = '1') =>
+    new Promise((resolve, reject) => {
+      const ffmpeg = spawnFfmpeg(useHwaccel, seekTime);
+      let errorOutput = '';
+      ffmpeg.stderr.on('data', (chunk) => (errorOutput += chunk.toString()));
+      ffmpeg.once('error', reject);
+      ffmpeg.once('exit', (code, signal) => {
+        if (code === 0) resolve();
+        else reject(new Error(errorOutput.trim() || `ffmpeg exited with ${code ?? signal}`));
+      });
     });
-  });
-  let processing;
+
   try {
-    processing = pipeline(ffmpeg.stdout, transformer, createWriteStream(output));
-    await Promise.all([processing, ffmpegExit]);
+    try {
+      await runFfmpeg(true, '1');
+    } catch {
+      // Fallback: CPU decode from 0s for short clips or unsupported hardware codecs
+      await runFfmpeg(false, '0');
+    }
     return thumbnailPath;
   } catch (error) {
-    ffmpeg.kill('SIGTERM');
-    await processing?.catch(() => {});
     await fs.rm(output, { force: true });
     console.warn(`Thumbnail skipped for ${relativePath}: ${error.message}`);
     return null;

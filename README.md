@@ -4,7 +4,7 @@ BrightVideo is a self-hosted video library for browsing, searching, filtering, a
 
 The application generates small WebP thumbnails during indexing and stores them beside the SQLite catalog. Browsing the timeline uses these local thumbnails; the source video is only requested when a preview is hovered or playback is opened. If thumbnail generation is unavailable, the browser falls back to the video's first frame.
 
-Thumbnails use FFmpeg for frame extraction and Sharp for resizing and WebP encoding.
+Thumbnails use FFmpeg with Apple Silicon hardware acceleration (VideoToolbox on macOS) for direct fast single-pass WebP encoding.
 
 ## Features
 
