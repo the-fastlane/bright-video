@@ -714,7 +714,11 @@ export class App implements OnInit {
 
   protected stopPreview(frame: HTMLElement): void {
     const element = frame.querySelector('video');
-    element?.pause();
+    if (element) {
+      element.pause();
+      element.removeAttribute('src');
+      element.load();
+    }
     this.clearPreviewState();
   }
 

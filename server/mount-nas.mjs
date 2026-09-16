@@ -13,12 +13,12 @@ if (!source || !mountPath || !options) {
 }
 
 console.log(`Preparing NAS mount at ${mountPath}`);
-execFileSync('sudo', ['mkdir', '-p', mountPath], { stdio: 'inherit' });
 try {
   execFileSync('sudo', ['umount', mountPath], { stdio: 'inherit' });
 } catch {
   // The path is normally not mounted yet; continue to the mount command.
 }
+execFileSync('sudo', ['mkdir', '-p', mountPath], { stdio: 'inherit' });
 
 const mountArgs =
   mountCommand === 'mount_nfs'

@@ -3,6 +3,7 @@ import {
   Component,
   ElementRef,
   input,
+  OnDestroy,
   output,
   signal,
   ViewChild,
@@ -19,7 +20,7 @@ export type VideoCardPreviewEvent = {
   templateUrl: './video-card.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class VideoCardComponent {
+export class VideoCardComponent implements OnDestroy {
   readonly video = input.required<VideoRecord>();
   readonly loaded = input(false);
   readonly mediaDebug = input(false);
@@ -38,6 +39,7 @@ export class VideoCardComponent {
   protected readonly previewFrameVisible = signal(false);
   protected readonly previewStopped = signal(false);
   protected readonly thumbnailUnavailable = signal(false);
+  private hoverTimer?: ReturnType<typeof setTimeout>;
 
   protected aspectRatio(): string {
     const { width, height } = this.video();
@@ -49,16 +51,27 @@ export class VideoCardComponent {
   readonly mediaFrame?: ElementRef<HTMLElement>;
 
   protected emitPreviewStart(): void {
-    this.previewActive.set(true);
-    this.previewPlaying.set(false);
-    this.previewStopped.set(false);
-    const frame = this.mediaFrame?.nativeElement;
-    if (frame) this.previewStart.emit({ video: this.video(), frame });
+    this.clearHoverTimer();
+    this.hoverTimer = setTimeout(() => {
+      this.previewActive.set(true);
+      this.previewPlaying.set(false);
+      this.previewStopped.set(false);
+      const frame = this.mediaFrame?.nativeElement;
+      if (frame) this.previewStart.emit({ video: this.video(), frame });
+    }, 200);
+  }
+
+  private clearHoverTimer(): void {
+    if (this.hoverTimer) {
+      clearTimeout(this.hoverTimer);
+      this.hoverTimer = undefined;
+    }
   }
 
   protected emitPreviewStop(): void {
+    this.clearHoverTimer();
     this.previewActive.set(false);
-    this.previewStopped.set(this.previewFrameVisible());
+    this.previewStopped.set(true);
     const frame = this.mediaFrame?.nativeElement;
     if (frame) {
       if (!this.previewFrameVisible()) {
@@ -71,6 +84,10 @@ export class VideoCardComponent {
       }
       this.previewStop.emit(frame);
     }
+  }
+
+  ngOnDestroy(): void {
+    this.clearHoverTimer();
   }
 
   protected handleThumbnailError(): void {
@@ -104,7 +121,6 @@ export class VideoCardComponent {
   protected handleEmptied(): void {
     this.previewPlaying.set(false);
     this.previewFrameVisible.set(false);
-    this.previewStopped.set(false);
   }
 
   protected stopCardClick(event: Event): void {

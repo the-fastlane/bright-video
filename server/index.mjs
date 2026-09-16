@@ -59,14 +59,14 @@ const statConcurrency = Number.isInteger(configuredStatConcurrency)
   ? Math.max(1, configuredStatConcurrency)
   : 64;
 const configuredMediaStreamConcurrency = Number(
-  process.env.MEDIA_STREAM_CONCURRENCY ?? (videoSource === 'nas' ? 1 : 4),
+  process.env.MEDIA_STREAM_CONCURRENCY ?? (videoSource === 'nas' ? 4 : 4),
 );
 const mediaStreamConcurrency = Number.isInteger(configuredMediaStreamConcurrency)
   ? Math.max(1, configuredMediaStreamConcurrency)
   : 4;
 // Matches the NFS rsize so each stream read maps onto a single network read.
 const streamChunkSize = 1 << 20;
-const openRangeChunkSize = 4 * 1024 * 1024;
+const openRangeChunkSize = 1 * 1024 * 1024;
 const videoCacheMaxAgeSeconds = Number(process.env.VIDEO_CACHE_MAX_AGE ?? 86_400);
 const statCacheTtlMs = Number(process.env.STAT_CACHE_TTL_MS ?? 60_000);
 const statCacheMaxEntries = 20_000;

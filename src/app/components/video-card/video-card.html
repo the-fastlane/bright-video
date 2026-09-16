@@ -25,8 +25,8 @@
     <video
       [attr.src]="
         previewActive() ||
-        previewFrameVisible() ||
-        ((!video().thumbnailUrl || thumbnailUnavailable()) && loaded())
+        (previewFrameVisible() && !previewStopped()) ||
+        ((!video().thumbnailUrl || thumbnailUnavailable()) && loaded() && !previewStopped())
           ? video().url
           : null
       "
@@ -37,7 +37,7 @@
       [class.preview-playing]="previewPlaying()"
       [class.preview-frame-visible]="previewFrameVisible()"
       [class.preview-stopped]="previewStopped()"
-      preload="metadata"
+      [attr.preload]="previewActive() ? 'metadata' : 'none'"
       loop
       playsinline
       muted
