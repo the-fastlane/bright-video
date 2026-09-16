@@ -72,6 +72,10 @@ const statCacheTtlMs = Number(process.env.STAT_CACHE_TTL_MS ?? 60_000);
 const statCacheMaxEntries = 20_000;
 const watchEnabled = (process.env.WATCH_ENABLED ?? 'true').trim().toLowerCase() !== 'false';
 const mediaDebug = (process.env.MEDIA_DEBUG ?? 'false').trim().toLowerCase() === 'true';
+const configuredPreviewTransitionMs = Number(process.env.PREVIEW_TRANSITION_MS ?? 850);
+const previewTransitionMs = Number.isFinite(configuredPreviewTransitionMs)
+  ? Math.max(100, configuredPreviewTransitionMs)
+  : 850;
 // Polling every second across a NAS library floods it with stat calls and starves streaming.
 const configuredWatchInterval = Number(
   process.env.WATCH_INTERVAL_MS ?? (videoSource === 'nas' ? 60_000 : 1_000),
@@ -494,14 +498,14 @@ function createSemaphore(limit) {
       return { active, queued: waiters.length };
     },
     acquire(signal) {
-      if (active < limit) {
-        active += 1;
-        return Promise.resolve(releaseNext);
-      }
       if (signal?.aborted)
         return Promise.reject(
           Object.assign(new Error('Media request aborted'), { code: 'ABORT_ERR' }),
         );
+      if (active < limit) {
+        active += 1;
+        return Promise.resolve(releaseNext);
+      }
       return new Promise((resolve, reject) => {
         const waiter = { resolve, reject, signal, onAbort: undefined };
         waiter.onAbort = () => {
@@ -1075,7 +1079,8 @@ function isClientAbort(error) {
     error?.code === 'ERR_STREAM_PREMATURE_CLOSE' ||
     error?.code === 'ECONNRESET' ||
     error?.code === 'EPIPE' ||
-    error?.code === 'ABORT_ERR'
+    error?.code === 'ABORT_ERR' ||
+    error?.name === 'AbortError'
   );
 }
 
@@ -1085,8 +1090,10 @@ async function serveVideo(request, response, pathname) {
   const requestStartedAt = Date.now();
   const mediaRequestId = nextMediaRequestId++;
   const requestAbortController = new AbortController();
-  request.once('aborted', () => requestAbortController.abort());
-  response.once('close', () => requestAbortController.abort());
+  const abortHandler = () => requestAbortController.abort();
+  request.once('close', abortHandler);
+  response.once('close', abortHandler);
+  request.socket?.once('close', abortHandler);
   const relativePath = decodeURIComponent(pathname.slice('/videos/'.length));
   const file = path.resolve(videoRoot, relativePath);
   if (!file.startsWith(`${videoRoot}${path.sep}`))
@@ -1145,15 +1152,26 @@ async function serveVideo(request, response, pathname) {
 
   try {
     if (!range) {
-      response.writeHead(200, { ...validators, 'content-type': type, 'content-length': stat.size });
-      debugMedia(`headers status=200 length=${stat.size}`);
-      if (request.method === 'HEAD') return response.end();
+      if (request.method === 'HEAD') {
+        response.writeHead(200, {
+          ...validators,
+          'content-type': type,
+          'content-length': stat.size,
+        });
+        return response.end();
+      }
       const beforeAcquire = mediaReadSlots.getState();
       debugMedia(`slot-wait active=${beforeAcquire.active} queued=${beforeAcquire.queued}`);
       const releaseReadSlot = await mediaReadSlots.acquire(requestAbortController.signal);
       try {
         const afterAcquire = mediaReadSlots.getState();
         debugMedia(`slot-acquired active=${afterAcquire.active} queued=${afterAcquire.queued}`);
+        response.writeHead(200, {
+          ...validators,
+          'content-type': type,
+          'content-length': stat.size,
+        });
+        debugMedia(`headers status=200 length=${stat.size}`);
         const stream = createReadStream(file, {
           highWaterMark: streamChunkSize,
           signal: requestAbortController.signal,
@@ -1175,20 +1193,28 @@ async function serveVideo(request, response, pathname) {
     if (!Number.isInteger(start) || start < 0 || start >= stat.size)
       return json(response, 416, { error: 'Range not satisfiable' });
     const end = Math.min(requestedEnd, stat.size - 1);
-    response.writeHead(206, {
-      ...validators,
-      'content-type': type,
-      'content-length': end - start + 1,
-      'content-range': `bytes ${start}-${end}/${stat.size}`,
-    });
-    debugMedia(`headers status=206 bytes=${start}-${end}`);
-    if (request.method === 'HEAD') return response.end();
+    if (request.method === 'HEAD') {
+      response.writeHead(206, {
+        ...validators,
+        'content-type': type,
+        'content-length': end - start + 1,
+        'content-range': `bytes ${start}-${end}/${stat.size}`,
+      });
+      return response.end();
+    }
     const beforeAcquire = mediaReadSlots.getState();
     debugMedia(`slot-wait active=${beforeAcquire.active} queued=${beforeAcquire.queued}`);
     const releaseReadSlot = await mediaReadSlots.acquire(requestAbortController.signal);
     try {
       const afterAcquire = mediaReadSlots.getState();
       debugMedia(`slot-acquired active=${afterAcquire.active} queued=${afterAcquire.queued}`);
+      response.writeHead(206, {
+        ...validators,
+        'content-type': type,
+        'content-length': end - start + 1,
+        'content-range': `bytes ${start}-${end}/${stat.size}`,
+      });
+      debugMedia(`headers status=206 bytes=${start}-${end}`);
       const stream = createReadStream(file, {
         start,
         end,
@@ -1206,7 +1232,7 @@ async function serveVideo(request, response, pathname) {
   } catch (error) {
     // Browsers abort media requests constantly while scrolling; that is not an error.
     if (isClientAbort(error)) {
-      debugMedia(`client-abort code=${error.code ?? 'unknown'}`);
+      debugMedia(`client-abort code=${error.code ?? error.name ?? 'unknown'}`);
       return;
     }
     debugMedia(`error ${error instanceof Error ? error.message : String(error)}`);
@@ -1276,7 +1302,7 @@ const server = createServer(async (request, response) => {
     if (url.pathname === '/api/albums' && request.method === 'GET')
       return json(response, 200, { albums: database.listAlbums() });
     if (url.pathname === '/api/config' && request.method === 'GET')
-      return json(response, 200, { mediaDebug });
+      return json(response, 200, { mediaDebug, previewTransitionMs });
     if (url.pathname === '/api/scan-status' && request.method === 'GET')
       return json(response, 200, scanStatus);
     if (url.pathname === '/api/albums' && request.method === 'POST') {

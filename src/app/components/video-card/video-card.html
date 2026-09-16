@@ -14,22 +14,39 @@
     (mouseleave)="emitPreviewStop()"
   >
     @if (video().thumbnailUrl && !thumbnailUnavailable()) {
-      <img [src]="video().thumbnailUrl" [alt]="video().title" (error)="handleThumbnailError()" />
+      <img
+        [class.preview-active]="previewActive()"
+        [class.preview-playing]="previewPlaying()"
+        [src]="video().thumbnailUrl"
+        [alt]="video().title"
+        (error)="handleThumbnailError()"
+      />
     }
     <video
       [attr.src]="
-        previewActive() || ((!video().thumbnailUrl || thumbnailUnavailable()) && loaded())
+        previewActive() ||
+        previewFrameVisible() ||
+        ((!video().thumbnailUrl || thumbnailUnavailable()) && loaded())
           ? video().url
           : null
       "
-      [hidden]="video().thumbnailUrl && !previewActive() && !thumbnailUnavailable()"
+      [attr.poster]="video().thumbnailUrl"
+      [class.preview-active]="
+        previewActive() || ((!video().thumbnailUrl || thumbnailUnavailable()) && loaded())
+      "
+      [class.preview-playing]="previewPlaying()"
+      [class.preview-frame-visible]="previewFrameVisible()"
+      [class.preview-stopped]="previewStopped()"
       preload="metadata"
+      loop
       playsinline
       muted
       disableremoteplayback
       disablepictureinpicture
       (loadstart)="logMediaEvent($event)"
       (loadedmetadata)="handleLoadedMetadata($event)"
+      (playing)="handlePlaying($event)"
+      (emptied)="handleEmptied()"
       (progress)="logMediaEvent($event)"
       (canplay)="logMediaEvent($event)"
       (stalled)="logMediaEvent($event)"

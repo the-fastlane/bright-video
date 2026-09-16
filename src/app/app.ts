@@ -93,6 +93,7 @@ export class App implements OnInit {
   protected readonly activeMonth = signal('2019-11');
   protected readonly loadedVideoIds = signal<Set<string>>(new Set());
   protected readonly mediaDebug = signal(false);
+  protected readonly previewTransitionMs = signal(850);
   private suspendedLoadedVideoIds?: Set<string>;
   private previewTimer?: ReturnType<typeof setTimeout>;
   private searchTimer?: ReturnType<typeof setTimeout>;
@@ -129,8 +130,14 @@ export class App implements OnInit {
     try {
       const response = await fetch('/api/config');
       if (!response.ok) return;
-      const config = (await response.json()) as { mediaDebug?: boolean };
+      const config = (await response.json()) as {
+        mediaDebug?: boolean;
+        previewTransitionMs?: number;
+      };
       this.mediaDebug.set(config.mediaDebug === true);
+      if (Number.isFinite(config.previewTransitionMs)) {
+        this.previewTransitionMs.set(config.previewTransitionMs!);
+      }
     } catch {
       this.mediaDebug.set(false);
     }
@@ -668,28 +675,46 @@ export class App implements OnInit {
     if (!element) return;
     this.clearPreviewTimer();
     this.previewLoading.set(video.id);
-    this.previewTimer = setTimeout(() => {
+    const playPreview = () => {
       element.muted = true;
-      element.currentTime = 1;
-      element
-        .play()
-        .then(() => {
-          if (!element.isConnected || !element.getAttribute('src')) return;
-          this.previewLoading.set(null);
-          this.playingPreview.set(video.id);
-        })
-        .catch(() => {
-          if (this.previewLoading() === video.id) this.previewLoading.set(null);
-        });
-    }, 650);
+      const playAtThumbnailFrame = () => {
+        if (!element.isConnected || !element.getAttribute('src')) return;
+        const hasRetainedPlayback = Boolean(element.currentSrc) && element.currentTime > 0.01;
+        if (!hasRetainedPlayback) element.currentTime = 1;
+        const play = () => element.play();
+        const seek =
+          (hasRetainedPlayback || Math.abs(element.currentTime - 1) < 0.01) &&
+          element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => {
+                element.addEventListener(
+                  hasRetainedPlayback ? 'canplay' : 'seeked',
+                  () => resolve(),
+                  { once: true },
+                );
+              });
+        seek
+          .then(play)
+          .then(() => {
+            if (!element.isConnected || !element.getAttribute('src')) return;
+            this.previewLoading.set(null);
+            this.playingPreview.set(video.id);
+          })
+          .catch(() => {
+            if (this.previewLoading() === video.id) this.previewLoading.set(null);
+          });
+      };
+      if (element.readyState >= HTMLMediaElement.HAVE_METADATA) playAtThumbnailFrame();
+      else element.addEventListener('loadedmetadata', playAtThumbnailFrame, { once: true });
+    };
+    const hasRetainedPlayback = Boolean(element.currentSrc) && element.currentTime > 0.01;
+    if (hasRetainedPlayback) playPreview();
+    else this.previewTimer = setTimeout(playPreview, this.previewTransitionMs());
   }
 
   protected stopPreview(frame: HTMLElement): void {
     const element = frame.querySelector('video');
-    if (element) {
-      element.pause();
-      element.currentTime = 1;
-    }
+    element?.pause();
     this.clearPreviewState();
   }
 

@@ -54,6 +54,18 @@ app-video-card {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  opacity: 0;
+  transition: opacity var(--preview-transition-ms, 850ms) ease;
+}
+
+.media-frame video.preview-active,
+.media-frame video.preview-playing,
+.media-frame video.preview-frame-visible {
+  opacity: 0.8;
+}
+
+.media-frame video.preview-stopped {
+  transition: none;
 }
 
 .media-frame img {
@@ -64,6 +76,24 @@ app-video-card {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  opacity: 1;
+  transition: opacity var(--preview-transition-ms, 850ms) ease;
+}
+
+.media-frame img.preview-active {
+  opacity: 0.35;
+}
+
+.media-frame img.preview-playing {
+  opacity: 0;
+}
+
+.media-frame:has(video.preview-frame-visible) img {
+  opacity: 0;
+}
+
+.media-frame:has(video.preview-stopped) img {
+  transition: none;
 }
 
 .media-shade {
@@ -187,7 +217,7 @@ app-video-card {
 }
 
 .duration-badge.loading::before {
-  animation: preview-loading 0.65s linear forwards;
+  animation: preview-loading var(--preview-transition-ms, 850ms) linear forwards;
 }
 
 @media (max-width: 600px) {

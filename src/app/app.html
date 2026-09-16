@@ -1,4 +1,8 @@
-<div class="shell" [class.night-mode]="nightMode()">
+<div
+  class="shell"
+  [class.night-mode]="nightMode()"
+  [style.--preview-transition-ms]="previewTransitionMs() + 'ms'"
+>
   <app-header
     [videoCount]="videos().length"
     [searchQuery]="searchQuery()"

@@ -34,6 +34,9 @@ export class VideoCardComponent {
   readonly menuOpened = output<VideoCardComponent | null>();
   protected readonly menuOpen = signal(false);
   protected readonly previewActive = signal(false);
+  protected readonly previewPlaying = signal(false);
+  protected readonly previewFrameVisible = signal(false);
+  protected readonly previewStopped = signal(false);
   protected readonly thumbnailUnavailable = signal(false);
 
   protected aspectRatio(): string {
@@ -47,19 +50,24 @@ export class VideoCardComponent {
 
   protected emitPreviewStart(): void {
     this.previewActive.set(true);
+    this.previewPlaying.set(false);
+    this.previewStopped.set(false);
     const frame = this.mediaFrame?.nativeElement;
     if (frame) this.previewStart.emit({ video: this.video(), frame });
   }
 
   protected emitPreviewStop(): void {
     this.previewActive.set(false);
+    this.previewStopped.set(this.previewFrameVisible());
     const frame = this.mediaFrame?.nativeElement;
     if (frame) {
-      const video = frame.querySelector('video');
-      if (video && this.video().thumbnailUrl && !this.thumbnailUnavailable()) {
-        video.pause();
-        video.removeAttribute('src');
-        video.load();
+      if (!this.previewFrameVisible()) {
+        const video = frame.querySelector('video');
+        if (video && video.getAttribute('src')) {
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
+        }
       }
       this.previewStop.emit(frame);
     }
@@ -85,6 +93,18 @@ export class VideoCardComponent {
     const video = event.currentTarget as HTMLVideoElement;
     if (video.duration > 1) video.currentTime = 1;
     this.durationLoaded.emit({ video: this.video(), event });
+  }
+
+  protected handlePlaying(event: Event): void {
+    this.logMediaEvent(event);
+    this.previewPlaying.set(true);
+    this.previewFrameVisible.set(true);
+  }
+
+  protected handleEmptied(): void {
+    this.previewPlaying.set(false);
+    this.previewFrameVisible.set(false);
+    this.previewStopped.set(false);
   }
 
   protected stopCardClick(event: Event): void {
