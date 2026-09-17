@@ -54,14 +54,13 @@ app-video-card {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  opacity: 0;
-  transition: opacity var(--preview-transition-ms, 850ms) ease;
+  opacity: 1;
 }
 
 .media-frame video.preview-active,
 .media-frame video.preview-playing,
 .media-frame video.preview-frame-visible {
-  opacity: 0.8;
+  opacity: 1;
 }
 
 .media-frame video.preview-stopped {
@@ -71,36 +70,25 @@ app-video-card {
 .media-frame img {
   position: absolute;
   inset: 0;
-  z-index: 0;
+  z-index: 2;
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
   opacity: 1;
+  //filter: saturate(1.25) brightness(0.75) contrast(1.2);
   transition: opacity var(--preview-transition-ms, 850ms) ease;
 }
 
-.media-frame img.preview-active {
-  opacity: 0.35;
-}
-
-.media-frame img.preview-playing {
+.media-frame:hover img {
   opacity: 0;
-}
-
-.media-frame:has(video.preview-frame-visible) img {
-  opacity: 0;
-}
-
-.media-frame:has(video.preview-stopped) img {
-  transition: none;
 }
 
 .media-shade {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(0deg, rgba(25, 24, 22, 0.42), transparent 55%);
-  pointer-events: none;
+  // position: absolute;
+  // inset: 0;
+  // background: linear-gradient(0deg, rgba(25, 24, 22, 0.42), transparent 55%);
+  // pointer-events: none;
 }
 
 .album-add-control {

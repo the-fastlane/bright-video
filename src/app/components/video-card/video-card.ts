@@ -25,6 +25,7 @@ export class VideoCardComponent implements OnDestroy {
   readonly loaded = input(false);
   readonly mediaDebug = input(false);
   readonly duration = input('');
+  readonly previewTransitionMs = input(850);
   readonly previewLoading = input(false);
   readonly open = output<VideoRecord>();
   readonly addToExistingAlbum = output<VideoRecord>();
@@ -40,6 +41,7 @@ export class VideoCardComponent implements OnDestroy {
   protected readonly previewStopped = signal(false);
   protected readonly thumbnailUnavailable = signal(false);
   private hoverTimer?: ReturnType<typeof setTimeout>;
+  private fadeOutTimer?: ReturnType<typeof setTimeout>;
 
   protected aspectRatio(): string {
     const { width, height } = this.video();
@@ -52,13 +54,12 @@ export class VideoCardComponent implements OnDestroy {
 
   protected emitPreviewStart(): void {
     this.clearHoverTimer();
-    this.hoverTimer = setTimeout(() => {
-      this.previewActive.set(true);
-      this.previewPlaying.set(false);
-      this.previewStopped.set(false);
-      const frame = this.mediaFrame?.nativeElement;
-      if (frame) this.previewStart.emit({ video: this.video(), frame });
-    }, 200);
+    this.clearFadeOutTimer();
+    this.previewActive.set(true);
+    this.previewPlaying.set(false);
+    this.previewStopped.set(false);
+    const frame = this.mediaFrame?.nativeElement;
+    if (frame) this.previewStart.emit({ video: this.video(), frame });
   }
 
   private clearHoverTimer(): void {
@@ -68,26 +69,40 @@ export class VideoCardComponent implements OnDestroy {
     }
   }
 
+  private clearFadeOutTimer(): void {
+    if (this.fadeOutTimer) {
+      clearTimeout(this.fadeOutTimer);
+      this.fadeOutTimer = undefined;
+    }
+  }
+
   protected emitPreviewStop(): void {
     this.clearHoverTimer();
+    this.clearFadeOutTimer();
     this.previewActive.set(false);
-    this.previewStopped.set(true);
+
+    // Allow thumbnail to fade back in over previewTransitionMs before stopping/removing video
     const frame = this.mediaFrame?.nativeElement;
-    if (frame) {
-      if (!this.previewFrameVisible()) {
+    const transitionMs = Math.max(100, this.previewTransitionMs());
+    this.fadeOutTimer = setTimeout(() => {
+      this.previewPlaying.set(false);
+      this.previewFrameVisible.set(false);
+      this.previewStopped.set(true);
+      if (frame) {
         const video = frame.querySelector('video');
         if (video && video.getAttribute('src')) {
           video.pause();
           video.removeAttribute('src');
           video.load();
         }
+        this.previewStop.emit(frame);
       }
-      this.previewStop.emit(frame);
-    }
+    }, transitionMs);
   }
 
   ngOnDestroy(): void {
     this.clearHoverTimer();
+    this.clearFadeOutTimer();
   }
 
   protected handleThumbnailError(): void {

@@ -30,14 +30,13 @@
           ? video().url
           : null
       "
-      [attr.poster]="video().thumbnailUrl"
       [class.preview-active]="
         previewActive() || ((!video().thumbnailUrl || thumbnailUnavailable()) && loaded())
       "
       [class.preview-playing]="previewPlaying()"
       [class.preview-frame-visible]="previewFrameVisible()"
       [class.preview-stopped]="previewStopped()"
-      [attr.preload]="previewActive() ? 'metadata' : 'none'"
+      [attr.preload]="previewActive() ? 'auto' : 'none'"
       loop
       playsinline
       muted

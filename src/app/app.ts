@@ -707,9 +707,7 @@ export class App implements OnInit {
       if (element.readyState >= HTMLMediaElement.HAVE_METADATA) playAtThumbnailFrame();
       else element.addEventListener('loadedmetadata', playAtThumbnailFrame, { once: true });
     };
-    const hasRetainedPlayback = Boolean(element.currentSrc) && element.currentTime > 0.01;
-    if (hasRetainedPlayback) playPreview();
-    else this.previewTimer = setTimeout(playPreview, this.previewTransitionMs());
+    playPreview();
   }
 
   protected stopPreview(frame: HTMLElement): void {

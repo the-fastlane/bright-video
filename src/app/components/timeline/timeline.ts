@@ -35,6 +35,7 @@ export class TimelineComponent implements AfterViewInit, OnDestroy {
   readonly loadedVideoIds = input.required<Set<string>>();
   readonly videoDurations = input.required<Map<string, number>>();
   readonly mediaDebug = input(false);
+  readonly previewTransitionMs = input(850);
   readonly previewLoadingId = input<string | null>(null);
   readonly openVideo = output<VideoRecord>();
   readonly addToExistingAlbum = output<VideoRecord>();

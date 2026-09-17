@@ -38,6 +38,7 @@
                         [video]="video"
                         [loaded]="loadedVideoIds().has(video.id)"
                         [mediaDebug]="mediaDebug()"
+                        [previewTransitionMs]="previewTransitionMs()"
                         [duration]="formatDuration(video)"
                         [previewLoading]="previewLoadingId() === video.id"
                         (open)="openVideo.emit($event)"
