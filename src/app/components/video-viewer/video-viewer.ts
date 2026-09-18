@@ -1,11 +1,21 @@
-import { Component, ElementRef, input, OnDestroy, output, ViewChild } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  input,
+  OnChanges,
+  OnDestroy,
+  output,
+  signal,
+  SimpleChanges,
+  ViewChild,
+} from '@angular/core';
 import { VideoRecord } from '../../models/video-record';
 
 @Component({
   selector: 'app-video-viewer',
   templateUrl: './video-viewer.html',
 })
-export class VideoViewerComponent implements OnDestroy {
+export class VideoViewerComponent implements OnChanges, OnDestroy {
   readonly video = input.required<VideoRecord>();
   readonly dateLabel = input.required<string>();
   readonly canGoPrevious = input(false);
@@ -13,6 +23,7 @@ export class VideoViewerComponent implements OnDestroy {
   readonly close = output<void>();
   readonly previous = output<void>();
   readonly next = output<void>();
+  protected readonly mediaLoading = signal(true);
 
   @ViewChild('viewerVideo')
   private readonly viewerVideo?: ElementRef<HTMLVideoElement>;
@@ -30,6 +41,16 @@ export class VideoViewerComponent implements OnDestroy {
     if (video.duration > 1) video.currentTime = 1;
   }
 
+  protected finishMediaLoad(): void {
+    this.mediaLoading.set(false);
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes['video'] && !changes['video'].firstChange) {
+      this.mediaLoading.set(true);
+    }
+  }
+
   ngOnDestroy(): void {
     this.stopMedia();
   }
@@ -40,7 +61,7 @@ export class VideoViewerComponent implements OnDestroy {
   }
 
   protected navigate(direction: 'previous' | 'next'): void {
-    this.stopMedia();
+    this.mediaLoading.set(true);
     this[direction].emit();
   }
 }
