@@ -77,10 +77,19 @@ app-video-card {
   object-fit: cover;
   opacity: 1;
   //filter: saturate(1) brightness(1.3) contrast(1.1);
-  transition: opacity var(--preview-transition-ms, 850ms) ease;
+  //transition: opacity var(--preview-transition-ms, 850ms) ease;
 }
 
-.media-frame:hover img {
+.media-frame:has(video.preview-playing) img {
+  opacity: 0;
+}
+
+.media-frame:has(video.preview-stopped) img {
+  opacity: 1;
+  transition: none;
+}
+
+.media-frame:has(img) video.preview-stopped {
   opacity: 0;
 }
 
@@ -203,9 +212,10 @@ app-video-card {
   transform: scaleX(0);
   transform-origin: left;
 }
-
-.duration-badge.loading::before {
-  animation: preview-loading var(--preview-transition-ms, 850ms) linear forwards;
+.video-card:hover {
+  .duration-badge::before {
+    animation: preview-loading var(--preview-transition-ms, 850ms) linear forwards;
+  }
 }
 
 @media (max-width: 600px) {

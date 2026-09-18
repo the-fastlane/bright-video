@@ -80,24 +80,19 @@ export class VideoCardComponent implements OnDestroy {
     this.clearHoverTimer();
     this.clearFadeOutTimer();
     this.previewActive.set(false);
-
-    // Allow thumbnail to fade back in over previewTransitionMs before stopping/removing video
+    this.previewPlaying.set(false);
+    this.previewFrameVisible.set(false);
+    this.previewStopped.set(true);
     const frame = this.mediaFrame?.nativeElement;
-    const transitionMs = Math.max(100, this.previewTransitionMs());
-    this.fadeOutTimer = setTimeout(() => {
-      this.previewPlaying.set(false);
-      this.previewFrameVisible.set(false);
-      this.previewStopped.set(true);
-      if (frame) {
-        const video = frame.querySelector('video');
-        if (video && video.getAttribute('src')) {
-          video.pause();
-          video.removeAttribute('src');
-          video.load();
-        }
-        this.previewStop.emit(frame);
+    if (frame) {
+      const video = frame.querySelector('video');
+      if (video && video.getAttribute('src')) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
       }
-    }, transitionMs);
+      this.previewStop.emit(frame);
+    }
   }
 
   ngOnDestroy(): void {

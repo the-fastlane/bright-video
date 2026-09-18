@@ -826,7 +826,10 @@ export class App implements OnInit {
   }
 
   private clearPreviewTimer(): void {
-    if (this.previewTimer) clearTimeout(this.previewTimer);
+    if (this.previewTimer) {
+      clearTimeout(this.previewTimer);
+      this.previewTimer = undefined;
+    }
   }
 
   private loadNightModePreference(): void {
