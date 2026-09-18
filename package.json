@@ -1,9 +1,10 @@
 {
   "name": "bright-video",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "scripts": {
     "ng": "ng",
     "start": "node --env-file=.env server/mount-nas.mjs && node --env-file=.env server/start.mjs",
+    "start:production": "npm run build && node --env-file=.env server/mount-nas.mjs && NODE_ENV=production node --env-file=.env server/index.mjs",
     "api": "node --env-file=.env server/index.mjs",
     "start:local": "node --env-file=.env server/index.mjs",
     "test:reindex": "node server/reindex-smoke.mjs",
