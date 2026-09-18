@@ -34,7 +34,8 @@ const thumbnailRoot = path.resolve(
 const port = Number(process.env.PORT ?? 3000);
 const mediaExtensions = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv']);
 const sidecarSuffix = '.supplemental-metadata.json';
-const metadataSignatureVersion = 'media-metadata-v3';
+const metadataSignatureVersion = 'media-metadata-v7';
+const thumbnailSignatureVersion = 'thumbnail-v1';
 const configuredScanConcurrency = Number(process.env.SCAN_CONCURRENCY ?? 12);
 const scanConcurrency = Number.isInteger(configuredScanConcurrency)
   ? Math.max(1, configuredScanConcurrency)
@@ -182,6 +183,16 @@ class ExifToolWorker {
           '-GPSLatitude',
           '-GPSLongitude',
           '-GPSAltitude',
+          '-ColorSpace',
+          '-ColorPrimaries',
+          '-TransferCharacteristics',
+          '-MatrixCoefficients',
+          '-BitDepth',
+          '-HDRFormat',
+          '-DolbyVision',
+          '-DolbyVisionProfile',
+          '-CodecID',
+          '-CompressorID',
           next.file,
           '-execute',
         ].join('\n') + '\n',
@@ -336,9 +347,37 @@ function hasQuarterTurn(value) {
   return rotation === 90 || rotation === 270;
 }
 
+async function readVideoStreamMetadata(file) {
+  return new Promise((resolve) => {
+    const ffmpeg = spawn(ffmpegPath, [
+      '-hide_banner',
+      '-loglevel',
+      'info',
+      '-i',
+      file,
+      '-map',
+      '0:v:0',
+      '-frames:v',
+      '0',
+      '-f',
+      'null',
+      '-',
+    ]);
+    let output = '';
+    ffmpeg.stderr.on('data', (chunk) => (output += chunk.toString()));
+    ffmpeg.once('error', () => resolve({ colorDescription: '', codecId: '' }));
+    ffmpeg.once('exit', () => {
+      const videoLine = output.split(/\r?\n/).find((line) => line.includes('Video:')) ?? '';
+      const codecId = videoLine.match(/\((dvhe|dvh1|hvc1|hev1|avc1)\s*\//i)?.[1] ?? '';
+      resolve({ colorDescription: videoLine, codecId });
+    });
+  });
+}
+
 async function readMediaMetadata(file) {
   try {
     const tags = (await metadataToolForFile().read(file))[0] ?? {};
+    const streamMetadata = await readVideoStreamMetadata(file);
     const rawWidth = Number.isFinite(Number(tags.ImageWidth)) ? Number(tags.ImageWidth) : null;
     const rawHeight = Number.isFinite(Number(tags.ImageHeight)) ? Number(tags.ImageHeight) : null;
     const rotated = hasQuarterTurn(tags.Rotation ?? tags.VideoRotation);
@@ -356,6 +395,15 @@ async function readMediaMetadata(file) {
       ),
       width: rotated ? rawHeight : rawWidth,
       height: rotated ? rawWidth : rawHeight,
+      colorSpace: tags.ColorSpace ?? null,
+      colorPrimaries: tags.ColorPrimaries ?? null,
+      transferCharacteristics: tags.TransferCharacteristics ?? null,
+      matrixCoefficients: tags.MatrixCoefficients ?? null,
+      bitDepth: numericValue(tags.BitDepth),
+      hdrFormat: tags.HDRFormat ?? null,
+      dolbyVision: tags.DolbyVision ?? tags.DolbyVisionProfile ?? null,
+      codecId: tags.CodecID ?? tags.CompressorID ?? streamMetadata.codecId ?? null,
+      colorDescription: streamMetadata.colorDescription,
     };
   } catch (error) {
     throw new Error(`ExifTool metadata read failed: ${error.message}`);
@@ -578,36 +626,109 @@ function recordFromMetadata(file, metadata, stat, mediaMetadata) {
   };
 }
 
-function thumbnailPathFor(relativePath) {
-  return `${createHash('sha256').update(String(relativePath)).digest('hex')}.webp`;
+function thumbnailPathFor(relativePath, fileSignature) {
+  return `${createHash('sha256')
+    .update(`${thumbnailSignatureVersion}:${fileSignature ?? relativePath}`)
+    .digest('hex')}.webp`;
 }
 
-async function createThumbnail(file, relativePath, shouldCreate) {
-  const thumbnailPath = thumbnailPathFor(relativePath);
+function normalizedTag(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase();
+}
+
+function thumbnailColorMode(mediaMetadata) {
+  const transfer = normalizedTag(mediaMetadata.transferCharacteristics);
+  const hdrFormat = normalizedTag(mediaMetadata.hdrFormat);
+  const dolbyVision = normalizedTag(mediaMetadata.dolbyVision);
+  const codecId = normalizedTag(mediaMetadata.codecId);
+  const primaries = normalizedTag(mediaMetadata.colorPrimaries);
+  const colorDescription = normalizedTag(mediaMetadata.colorDescription);
+  const isDolbyVision =
+    dolbyVision.includes('dolby vision') ||
+    dolbyVision.includes('dolbyvision') ||
+    hdrFormat.includes('dolby vision') ||
+    hdrFormat.includes('dolbyvision') ||
+    codecId.startsWith('dvhe') ||
+    codecId.startsWith('dvh1') ||
+    colorDescription.includes('dvhe') ||
+    colorDescription.includes('dvh1');
+  const isPq =
+    transfer.includes('smpte 2084') ||
+    transfer.includes('smpte2084') ||
+    transfer.includes('pq') ||
+    transfer.includes('perceptual quantizer') ||
+    colorDescription.includes('smpte2084');
+  const isHlg =
+    transfer.includes('arib std-b67') ||
+    transfer.includes('arib-std-b67') ||
+    transfer.includes('hybrid log-gamma') ||
+    transfer.includes('hlg') ||
+    colorDescription.includes('arib-std-b67');
+  const isBt2020 =
+    primaries.includes('bt.2020') ||
+    primaries.includes('bt2020') ||
+    colorDescription.includes('bt2020');
+
+  if (isHlg) return 'hlg';
+  if (isDolbyVision || isPq || isBt2020) return 'pq';
+  return 'sdr';
+}
+
+function thumbnailFilter(mediaMetadata) {
+  const colorMode = thumbnailColorMode(mediaMetadata);
+  if (colorMode === 'sdr') return 'scale=320:-1:force_original_aspect_ratio=decrease';
+
+  if (colorMode === 'hlg') {
+    return [
+      'zscale=transferin=arib-std-b67:transfer=linear:npl=203',
+      'format=gbrpf32le',
+      'tonemap=hable:desat=2',
+      'zscale=transfer=bt709:primaries=bt709:matrix=bt709:range=limited',
+      'format=yuv420p',
+      'scale=320:-1:force_original_aspect_ratio=decrease',
+    ].join(',');
+  }
+
+  return [
+    'zscale=transferin=smpte2084:transfer=linear:npl=100',
+    'format=gbrpf32le',
+    'tonemap=mobius:desat=2',
+    'zscale=transfer=bt709:primaries=bt709:matrix=bt709:range=limited',
+    'format=yuv420p',
+    'scale=320:-1:force_original_aspect_ratio=decrease',
+  ].join(',');
+}
+
+async function createThumbnail(file, relativePath, fileSignature, shouldCreate, mediaMetadata) {
+  const thumbnailPath = thumbnailPathFor(relativePath, fileSignature);
   const output = path.join(thumbnailRoot, thumbnailPath);
   if (!shouldCreate) return thumbnailPath;
   await fs.mkdir(thumbnailRoot, { recursive: true });
   const releaseThumbnailSlot = await thumbnailGenerationSlots.acquire();
 
+  const colorMode = thumbnailColorMode(mediaMetadata);
   const spawnFfmpeg = (useHwaccel, seekTime = '1') => {
-    const hwaccel = useHwaccel && isDarwin ? ['-hwaccel', 'videotoolbox'] : [];
+    const hwaccel =
+      useHwaccel && isDarwin && colorMode === 'sdr' ? ['-hwaccel', 'videotoolbox'] : [];
     return spawn(ffmpegPath, [
       '-hide_banner',
       '-loglevel',
       'error',
       ...hwaccel,
-      '-ss',
-      seekTime,
       '-i',
       file,
+      '-ss',
+      seekTime,
       '-vf',
-      'scale=320:-1:force_original_aspect_ratio=decrease',
+      thumbnailFilter(mediaMetadata),
       '-frames:v',
       '1',
       '-c:v',
       'libwebp',
       '-quality',
-      '75',
+      '82',
       '-compression_level',
       '2',
       '-y',
@@ -685,7 +806,7 @@ async function readRecord(file, onPhase = () => {}, force = false, precomputed =
       precomputed?.signature ??
       fileSignature(stat, (await firstExistingSidecarStat(file, precomputed?.knownFiles)).stat);
     const existing = database.getVideo(toRelativePath(file));
-    const expectedThumbnailPath = thumbnailPathFor(toRelativePath(file));
+    const expectedThumbnailPath = thumbnailPathFor(toRelativePath(file), signature);
     phase = 'database';
     onPhase(phase);
     if (
@@ -713,10 +834,12 @@ async function readRecord(file, onPhase = () => {}, force = false, precomputed =
     const thumbnailPath = await createThumbnail(
       file,
       relativePath,
+      signature,
       force ||
         existing?.file_signature !== signature ||
         !existing?.thumbnail_path ||
-        existing.thumbnail_path !== thumbnailPathFor(relativePath),
+        existing.thumbnail_path !== thumbnailPathFor(relativePath, signature),
+      mediaMetadata,
     );
     database.upsertVideo({
       ...recordFromMetadata(file, metadata, stat, mediaMetadata),

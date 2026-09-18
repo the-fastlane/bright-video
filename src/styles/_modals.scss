@@ -34,7 +34,7 @@
 .viewer {
   border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
   border-radius: var(--radius-lg);
-  background: #000;
+  background: var(--surface);
   box-shadow: var(--shadow-modal);
 }
 
