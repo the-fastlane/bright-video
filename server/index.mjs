@@ -902,7 +902,7 @@ async function readRecord(
       reusableSidecarStat ?? (sidecar ? await fs.stat(sidecar).catch(() => null) : null);
     const relativePath = toRelativePath(file);
     const thumbnailPath = preserveThumbnail
-      ? existing?.thumbnail_path ?? null
+      ? (existing?.thumbnail_path ?? null)
       : await createThumbnail(
           file,
           relativePath,

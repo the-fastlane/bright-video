@@ -91,7 +91,8 @@ try {
     throw new Error(`Search reindex returned HTTP ${searchReindexResponse.status}`);
   const searchResult = await waitFor(
     `${baseUrl}/api/scan-status`,
-    (status) => status.active === false && status.completedAt !== null && status.mode === 'search-reindex',
+    (status) =>
+      status.active === false && status.completedAt !== null && status.mode === 'search-reindex',
     deadline,
   );
   if (searchResult.errors) {
