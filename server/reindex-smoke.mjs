@@ -85,6 +85,26 @@ try {
       video.height > 0,
   );
   if (!metadataRecord) throw new Error('Reindex produced no record with valid dimensions');
+  const thumbnailUrl = metadataRecord.thumbnailUrl;
+  const searchReindexResponse = await fetch(`${baseUrl}/api/reindex-search`, { method: 'POST' });
+  if (!searchReindexResponse.ok)
+    throw new Error(`Search reindex returned HTTP ${searchReindexResponse.status}`);
+  const searchResult = await waitFor(
+    `${baseUrl}/api/scan-status`,
+    (status) => status.active === false && status.completedAt !== null && status.mode === 'search-reindex',
+    deadline,
+  );
+  if (searchResult.errors) {
+    const first = searchResult.errorDetails?.[0];
+    throw new Error(
+      `Search reindex reported ${searchResult.errors} errors: ${first?.error ?? 'unknown error'}`,
+    );
+  }
+  const searchCatalog = await (await fetch(`${baseUrl}/api/videos`)).json();
+  const searchRecord = searchCatalog.videos?.find((video) => video.id === metadataRecord.id);
+  if (!searchRecord) throw new Error('Search reindex removed the metadata record');
+  if (searchRecord.thumbnailUrl !== thumbnailUrl)
+    throw new Error('Search reindex changed the thumbnail assignment');
   console.log(`Reindex smoke passed: ${result.processed}/${result.total}, errors=0`);
 } catch (error) {
   console.error(output);

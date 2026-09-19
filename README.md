@@ -100,19 +100,23 @@ The application also reads media metadata through ExifTool. Files without supple
 
 BrightVideo supports these environment variables:
 
-| Variable                | Default                   | Purpose                                       |
-| ----------------------- | ------------------------- | --------------------------------------------- |
-| `PORT`                  | `3000`                    | HTTP port                                     |
-| `VIDEO_ROOT`            | `./videos`                | Local video library                           |
-| `VIDEO_SOURCE`          | `local`                   | Select `local` or `nas` media                 |
-| `NAS_VIDEO_ROOT`        | `/mnt/synology_nfs_share` | Host-mounted NAS path                         |
-| `NAS_MOUNT_SOURCE`      |                           | NFS server and export                         |
-| `NAS_MOUNT_PATH`        |                           | Local NFS mount path                          |
-| `NAS_MOUNT_OPTIONS`     |                           | Comma-separated NFS mount options             |
-| `SCAN_CONCURRENCY`      | `4`                       | Concurrent metadata scan workers              |
-| `THUMBNAIL_CONCURRENCY` | `12` (local), `4` (NAS)   | Concurrent thumbnail encoding workers         |
-| `DATABASE_PATH`         | `./data/bright-video.db`  | SQLite catalog file                           |
-| `THUMBNAIL_ROOT`        | next to `DATABASE_PATH`   | Local directory for generated WebP thumbnails |
+| Variable                | Default                   | Purpose                                                       |
+| ----------------------- | ------------------------- | ------------------------------------------------------------- |
+| `PORT`                  | `3000`                    | HTTP port                                                     |
+| `VIDEO_ROOT`            | `./videos`                | Local video library                                           |
+| `VIDEO_SOURCE`          | `local`                   | Select `local` or `nas` media                                 |
+| `NAS_VIDEO_ROOT`        | `/mnt/synology_nfs_share` | Host-mounted NAS path                                         |
+| `NAS_MOUNT_SOURCE`      |                           | NFS server and export                                         |
+| `NAS_MOUNT_PATH`        |                           | Local NFS mount path                                          |
+| `NAS_MOUNT_OPTIONS`     |                           | Comma-separated NFS mount options                             |
+| `NAS_MOUNT_TYPE`        | inferred (`nfs` or `smb`) | NAS mount protocol                                            |
+| `NAS_USERNAME`          |                           | NAS account for SMB mounts                                    |
+| `NFS_PASSWORD`          |                           | Mac administrator password for automatic sudo mounts          |
+| `NAS_PASSWORD`          |                           | Compatibility alias for NFS; SMB account password in SMB mode |
+| `SCAN_CONCURRENCY`      | `4`                       | Concurrent metadata scan workers                              |
+| `THUMBNAIL_CONCURRENCY` | `12` (local), `4` (NAS)   | Concurrent thumbnail encoding workers                         |
+| `DATABASE_PATH`         | `./data/bright-video.db`  | SQLite catalog file                                           |
+| `THUMBNAIL_ROOT`        | next to `DATABASE_PATH`   | Local directory for generated WebP thumbnails                 |
 
 For a host-mounted Synology NFS share, mount the share on the machine running
 BrightVideo first, then set `VIDEO_SOURCE=nas` and point `NAS_VIDEO_ROOT` at
@@ -122,9 +126,18 @@ HTTP byte ranges, so browser seeking and partial playback continue to work.
 
 When `VIDEO_SOURCE=nas`, `npm start` and `npm run start:production` first unmount
 `NAS_MOUNT_PATH` if it is already mounted, then mount `NAS_MOUNT_SOURCE` using `NAS_MOUNT_OPTIONS`.
-macOS may prompt for your administrator password in the terminal. The API and
+macOS may prompt for your administrator password in the terminal unless
+`NFS_PASSWORD` is configured. The API and
 Angular development server start only after the mount succeeds. When
 `VIDEO_SOURCE=local`, this mount step is skipped.
+
+For SMB, set `NAS_MOUNT_TYPE=smb`, `NAS_USERNAME`, `NAS_PASSWORD`, and use an
+SMB source such as `//synology.local/video`. The startup script passes the
+password through a temporary protected macOS SMB credentials file rather than
+putting it in the process arguments, then removes that file after mounting.
+`NAS_PASSWORD` is not an NFS account password. For NFS, use `NFS_PASSWORD` for
+the Mac administrator password used by `sudo`; the existing `NAS_PASSWORD` name
+is retained as a compatibility alias.
 
 `SCAN_CONCURRENCY` controls how many different video files can be indexed at
 once. It can improve NFS catalog scan throughput, but it does not split one

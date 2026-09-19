@@ -22,7 +22,7 @@ import { VideoCardPreviewEvent } from './components/video-card/video-card';
 import { VideoViewerComponent } from './components/video-viewer/video-viewer';
 
 type RescanProgress = {
-  mode?: 'scan' | 'reindex' | null;
+  mode?: 'scan' | 'reindex' | 'search-reindex' | null;
   processed: number;
   total: number;
   errors: number;
@@ -161,7 +161,11 @@ export class App implements OnInit {
   }
 
   protected reindexLibrary(): void {
-    void this.runScan('/api/reindex', 'Starting reindex…');
+    void this.runScan('/api/reindex', 'Starting full reindex…');
+  }
+
+  protected reindexSearch(): void {
+    void this.runScan('/api/reindex-search', 'Starting search reindex…');
   }
 
   private async runScan(endpoint: string, startMessage: string): Promise<void> {
@@ -251,7 +255,12 @@ export class App implements OnInit {
       stopped: status.stopped,
     });
     const remaining = this.formatRemainingTime(status.estimatedRemainingMs);
-    const operation = status.mode === 'reindex' ? 'Reindexing' : 'Scanning';
+    const operation =
+      status.mode === 'reindex'
+        ? 'Reindexing all'
+        : status.mode === 'search-reindex'
+          ? 'Reindexing search'
+          : 'Scanning';
     this.rescanMessage.set(
       status.total
         ? `${operation} ${status.processed} of ${status.total}${remaining ? ` · ${remaining}` : ''}${status.errors ? ` · ${status.errors} skipped` : ''}${status.currentFile ? ` · ${status.currentFile} (${status.currentPhase})` : ''}`

@@ -11,6 +11,7 @@ import { gzipSync } from 'node:zlib';
 import chokidar from 'chokidar';
 import ffmpegPath from 'ffmpeg-static';
 import { CatalogDatabase } from './catalog-db.mjs';
+import { resolveOfflineLocation } from './offline-geocoder.mjs';
 
 const isDarwin = process.platform === 'darwin';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,7 +35,7 @@ const thumbnailRoot = path.resolve(
 const port = Number(process.env.PORT ?? 3000);
 const mediaExtensions = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv']);
 const sidecarSuffix = '.supplemental-metadata.json';
-const metadataSignatureVersion = 'media-metadata-v7';
+const metadataSignatureVersion = 'media-metadata-v8';
 const thumbnailSignatureVersion = 'thumbnail-v1';
 const configuredScanConcurrency = Number(process.env.SCAN_CONCURRENCY ?? 12);
 const scanConcurrency = Number.isInteger(configuredScanConcurrency)
@@ -596,8 +597,60 @@ function parseTimestamp(value) {
     : null;
 }
 
+function normalizedSearchText(values) {
+  return [
+    ...new Set(
+      values
+        .flatMap((value) => String(value ?? '').split(/[,\n]/))
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ].join(' ');
+}
+
+function sidecarPeople(metadata) {
+  const names = [
+    ...new Set(
+      (Array.isArray(metadata.people)
+        ? metadata.people.map((person) => (typeof person === 'string' ? person : person?.name))
+        : []
+      )
+        .map((name) => String(name ?? '').trim())
+        .filter(Boolean),
+    ),
+  ];
+  return JSON.stringify(names);
+}
+
+function sidecarLocation(metadata) {
+  const location = metadata.location ?? metadata.locationName ?? metadata.place ?? {};
+  if (typeof location === 'string') return location.trim();
+  return normalizedSearchText([
+    location.city,
+    location.cityName,
+    location.state,
+    location.stateName,
+    location.region,
+    location.country,
+    location.countryName,
+  ]);
+}
+
+function sidecarCoordinates(metadata, mediaMetadata) {
+  const latitude = numericValue(metadata.geoData?.latitude);
+  const longitude = numericValue(metadata.geoData?.longitude);
+  if (latitude !== 0 || longitude !== 0) return { latitude, longitude };
+  return { latitude: mediaMetadata.latitude, longitude: mediaMetadata.longitude };
+}
+
 function recordFromMetadata(file, metadata, stat, mediaMetadata) {
   const relativePath = toRelativePath(file);
+  const coordinates = sidecarCoordinates(metadata, mediaMetadata);
+  const explicitLocation = sidecarLocation(metadata);
+  const location = normalizedSearchText([
+    explicitLocation,
+    ...resolveOfflineLocation(coordinates.latitude, coordinates.longitude),
+  ]);
   const captureDate =
     parseTimestamp(metadata.photoTakenTime?.timestamp ?? metadata.creationTime?.timestamp) ??
     (mediaMetadata.captureDateMs ? new Date(mediaMetadata.captureDateMs).toISOString() : null);
@@ -618,11 +671,13 @@ function recordFromMetadata(file, metadata, stat, mediaMetadata) {
     durationMs: mediaMetadata.durationMs,
     width: mediaMetadata.width,
     height: mediaMetadata.height,
-    latitude: mediaMetadata.latitude,
-    longitude: mediaMetadata.longitude,
+    latitude: coordinates.latitude,
+    longitude: coordinates.longitude,
     altitude: mediaMetadata.altitude,
     metadataSource: 'exiftool',
     metadataWarning: metadata.metadataWarning,
+    people: sidecarPeople(metadata),
+    location,
   };
 }
 
@@ -792,11 +847,26 @@ function recordFromDatabase(row) {
     durationMs: row.duration_ms,
     width: row.width,
     height: row.height,
+    people: (() => {
+      try {
+        const people = JSON.parse(row.people || '[]');
+        return Array.isArray(people) ? people : [];
+      } catch {
+        return row.people ? [row.people] : [];
+      }
+    })(),
+    location: row.location || undefined,
     metadataWarning: row.metadata_warning ?? undefined,
   };
 }
 
-async function readRecord(file, onPhase = () => {}, force = false, precomputed = null) {
+async function readRecord(
+  file,
+  onPhase = () => {},
+  force = false,
+  precomputed = null,
+  preserveThumbnail = false,
+) {
   let phase = 'filesystem';
   onPhase(phase);
   try {
@@ -831,16 +901,18 @@ async function readRecord(file, onPhase = () => {}, force = false, precomputed =
     const sidecarStat =
       reusableSidecarStat ?? (sidecar ? await fs.stat(sidecar).catch(() => null) : null);
     const relativePath = toRelativePath(file);
-    const thumbnailPath = await createThumbnail(
-      file,
-      relativePath,
-      signature,
-      force ||
-        existing?.file_signature !== signature ||
-        !existing?.thumbnail_path ||
-        existing.thumbnail_path !== thumbnailPathFor(relativePath, signature),
-      mediaMetadata,
-    );
+    const thumbnailPath = preserveThumbnail
+      ? existing?.thumbnail_path ?? null
+      : await createThumbnail(
+          file,
+          relativePath,
+          signature,
+          force ||
+            existing?.file_signature !== signature ||
+            !existing?.thumbnail_path ||
+            existing.thumbnail_path !== thumbnailPathFor(relativePath, signature),
+          mediaMetadata,
+        );
     database.upsertVideo({
       ...recordFromMetadata(file, metadata, stat, mediaMetadata),
       fileSignature: fileSignature(stat, sidecarStat),
@@ -908,7 +980,10 @@ function estimatedRemainingMs(status) {
   );
 }
 
-async function scanLibrary(changedPaths = null, force = false, contexts = null) {
+async function scanLibrary(changedPaths = null, mode = 'scan', contexts = null) {
+  const force = mode !== 'scan';
+  const preserveThumbnail = mode === 'search-reindex';
+  const rebuildThumbnails = mode === 'reindex';
   if (scanInFlight) {
     if (changedPaths) changedPaths.forEach((file) => pendingPaths.add(file));
     return scanInFlight;
@@ -919,10 +994,10 @@ async function scanLibrary(changedPaths = null, force = false, contexts = null) 
     void videoWatcher.close();
     videoWatcher = undefined;
   }
-  if (force && !changedPaths) await clearThumbnailStorage();
+  if (rebuildThumbnails && !changedPaths) await clearThumbnailStorage();
   scanStatus = {
     active: true,
-    mode: force ? 'reindex' : 'scan',
+    mode,
     processed: 0,
     total: 0,
     estimatedRemainingMs: null,
@@ -961,6 +1036,7 @@ async function scanLibrary(changedPaths = null, force = false, contexts = null) 
           },
           force,
           contexts?.get(file) ?? null,
+          preserveThumbnail,
         );
         scanStatus = {
           ...scanStatus,
@@ -1467,7 +1543,7 @@ const server = createServer(async (request, response) => {
       void findFilesNeedingScan().then(({ files, contexts, mediaFiles }) => {
         // Surface deletions immediately rather than making the user wait out the metadata pass.
         if (pruneMissingVideos(mediaFiles)) rebuildCatalog();
-        return scanLibrary(files, false, contexts);
+        return scanLibrary(files, 'scan', contexts);
       });
       return json(response, 202, { started: true, mode: 'scan' });
     }
@@ -1482,8 +1558,17 @@ const server = createServer(async (request, response) => {
     if (url.pathname === '/api/reindex' && request.method === 'POST') {
       const reindexMode = videoSource === 'local' ? 'local-main' : 'nas-optimized';
       console.log(`Starting ${reindexMode} reindex for ${videoRoot}`);
-      void scanLibrary(null, true);
+      void scanLibrary(null, 'reindex');
       return json(response, 202, { started: true, mode: 'reindex', source: videoSource });
+    }
+    if (url.pathname === '/api/reindex-search' && request.method === 'POST') {
+      console.log(`Starting search metadata reindex for ${videoRoot}`);
+      void scanLibrary(null, 'search-reindex');
+      return json(response, 202, {
+        started: true,
+        mode: 'search-reindex',
+        source: videoSource,
+      });
     }
     if (url.pathname.startsWith('/thumbnails/'))
       return serveThumbnail(request, response, url.pathname);

@@ -15,4 +15,6 @@ export interface VideoRecord {
   width?: number | null;
   height?: number | null;
   photosUrl?: string;
+  people?: string[];
+  location?: string;
 }

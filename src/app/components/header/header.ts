@@ -39,6 +39,7 @@ export class HeaderComponent {
   readonly openAlbums = output<void>();
   readonly scanLibrary = output<void>();
   readonly stopScan = output<void>();
+  readonly reindexSearch = output<void>();
   readonly reindexLibrary = output<void>();
   readonly searchChange = output<Event>();
 }
