@@ -96,6 +96,11 @@ const schema = `
     FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
   CREATE VIRTUAL TABLE IF NOT EXISTS video_search USING fts5(
     video_id UNINDEXED,
     title,
@@ -116,7 +121,10 @@ function normalizeSearch(value) {
     .trim()
     .split(/\s+/)
     .filter(Boolean)
-    .map((term) => `"${term.replaceAll('"', '""')}"`)
+    .map((term) => {
+      const escaped = term.replaceAll('"', '""');
+      return term.length >= 3 ? `"${escaped}"*` : `"${escaped}"`;
+    })
     .join(' AND ');
 }
 
@@ -402,6 +410,166 @@ export class CatalogDatabase {
       )
       .all(video.id)
       .map((row) => row.album_id);
+  }
+
+  getSetting(key, fallback = null) {
+    return (
+      this.#db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key)?.value ?? fallback
+    );
+  }
+
+  setSetting(key, value) {
+    this.#db
+      .prepare(
+        'INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      )
+      .run(key, String(value));
+  }
+
+  claimAnalysisJob() {
+    const job = this.#db
+      .prepare(
+        `
+      SELECT analysis_jobs.id, analysis_jobs.video_id, videos.file_path, videos.thumbnail_path
+      FROM analysis_jobs
+      JOIN videos ON videos.id = analysis_jobs.video_id
+      JOIN video_analysis ON video_analysis.video_id = videos.id
+      WHERE analysis_jobs.status = 'pending'
+        AND video_analysis.status IN ('pending', 'error')
+        AND analysis_jobs.available_at <= ?
+      ORDER BY analysis_jobs.priority DESC, analysis_jobs.id
+      LIMIT 1
+    `,
+      )
+      .get(now());
+    if (!job) return null;
+    this.#db
+      .prepare(
+        `
+      UPDATE analysis_jobs
+      SET status = 'running', attempts = attempts + 1, started_at = ?, error = NULL
+      WHERE id = ? AND status = 'pending'
+    `,
+      )
+      .run(now(), job.id);
+    this.#db
+      .prepare("UPDATE video_analysis SET status = 'running', error = NULL WHERE video_id = ?")
+      .run(job.video_id);
+    return job;
+  }
+
+  recoverAnalysisJobs() {
+    this.transaction(() => {
+      this.#db
+        .prepare("UPDATE analysis_jobs SET status = 'pending', started_at = NULL WHERE status = 'running'")
+        .run();
+      this.#db
+        .prepare("UPDATE video_analysis SET status = 'pending', error = NULL WHERE status = 'running'")
+        .run();
+    });
+  }
+
+  skipExhaustedAnalysisJobs(maxAttempts = 3) {
+    const exhausted = this.#db
+      .prepare(
+        `
+      SELECT analysis_jobs.video_id, videos.file_path, analysis_jobs.attempts, analysis_jobs.error
+      FROM analysis_jobs
+      JOIN videos ON videos.id = analysis_jobs.video_id
+      WHERE analysis_jobs.attempts >= ?
+        AND analysis_jobs.status IN ('pending', 'running', 'error')
+    `,
+      )
+      .all(maxAttempts);
+    if (!exhausted.length) return exhausted;
+    this.transaction(() => {
+      this.#db
+        .prepare(
+          "UPDATE analysis_jobs SET status = 'skipped', completed_at = ?, started_at = NULL WHERE attempts >= ? AND status IN ('pending', 'running', 'error')",
+        )
+        .run(now(), maxAttempts);
+      this.#db
+        .prepare(
+          "UPDATE video_analysis SET status = 'skipped' WHERE video_id IN (SELECT video_id FROM analysis_jobs WHERE status = 'skipped' AND attempts >= ?)",
+        )
+        .run(maxAttempts);
+    });
+    return exhausted;
+  }
+
+  completeAnalysis(videoId, { summary, tags, provider, model }) {
+    this.transaction(() => {
+      this.#db
+        .prepare(
+          `
+        UPDATE video_analysis
+        SET status = 'complete', summary = ?, provider = ?, model = ?, analyzed_at = ?, error = NULL
+        WHERE video_id = ?
+      `,
+        )
+        .run(summary, provider, model, now(), videoId);
+      this.#db
+        .prepare(
+          `
+        UPDATE analysis_jobs SET status = 'complete', completed_at = ?, error = NULL WHERE video_id = ?
+      `,
+        )
+        .run(now(), videoId);
+      const video = this.#db.prepare('SELECT * FROM videos WHERE id = ?').get(videoId);
+      if (video) {
+        this.#deleteSearch.run(videoId);
+        this.#insertSearch.run(
+          videoId,
+          `${video.title} ${video.filename}`,
+          video.description,
+          summary,
+          tags.join(' '),
+          video.people ?? '',
+          video.location ?? '',
+        );
+      }
+    });
+  }
+
+  failAnalysis(videoId, error, { retry = true } = {}) {
+    const attempts = this.#db
+      .prepare('SELECT attempts FROM analysis_jobs WHERE video_id = ?')
+      .get(videoId)?.attempts ?? 0;
+    const shouldRetry = retry && attempts < 3;
+    if (!shouldRetry) {
+      this.#db
+        .prepare("UPDATE video_analysis SET status = 'skipped', error = ? WHERE video_id = ?")
+        .run(error, videoId);
+      this.#db
+        .prepare("UPDATE analysis_jobs SET status = 'skipped', completed_at = ?, error = ? WHERE video_id = ?")
+        .run(now(), error, videoId);
+      return { skipped: true, attempts };
+    }
+    this.#db
+      .prepare("UPDATE video_analysis SET status = 'error', error = ? WHERE video_id = ?")
+      .run(error, videoId);
+    this.#db
+      .prepare(
+        "UPDATE analysis_jobs SET status = 'pending', available_at = ?, error = ? WHERE video_id = ?",
+      )
+      .run(new Date(Date.now() + 30_000).toISOString(), error, videoId);
+    return { skipped: false, attempts };
+  }
+
+  analysisStatus() {
+    return this.#db
+      .prepare(
+        `
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS complete,
+        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+        SUM(CASE WHEN status IN ('pending', 'error') THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped
+      FROM video_analysis
+    `,
+      )
+      .get();
   }
 
   close() {

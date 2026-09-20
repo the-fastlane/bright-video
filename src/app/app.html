@@ -59,9 +59,12 @@
   <app-settings-modal
     [groupingMode]="groupingMode()"
     [gridGap]="gridGap()"
+    [aiSearchEnabled]="aiSearchEnabled()"
+    [aiAnalysis]="aiAnalysis()"
     (close)="closeSettings()"
     (groupingChange)="setGroupingMode($event)"
     (gridGapChange)="setGridGap($event)"
+    (aiSearchChange)="setAiSearchEnabled($event)"
   />
 }
 

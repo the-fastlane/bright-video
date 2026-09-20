@@ -67,5 +67,23 @@
         aria-label="Grid spacing in pixels"
       />
     </label>
+    <label class="grouping-option ai-search-option">
+      <input
+        type="checkbox"
+        [checked]="aiSearchEnabled()"
+        (change)="aiSearchChange.emit($event)"
+        aria-label="Enable private local AI search"
+      />
+      <span>
+        <strong>Private local AI search</strong>
+        <small>Describe objects and activities using a model running on this Mac</small>
+        @if (aiSearchEnabled()) {
+          <small
+            >{{ aiAnalysis().complete ?? 0 }} of {{ aiAnalysis().total ?? 0 }} videos
+            analyzed</small
+          >
+        }
+      </span>
+    </label>
   </section>
 </div>

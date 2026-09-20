@@ -11,6 +11,7 @@ import { gzipSync } from 'node:zlib';
 import chokidar from 'chokidar';
 import ffmpegPath from 'ffmpeg-static';
 import { CatalogDatabase } from './catalog-db.mjs';
+import { LocalVisionProvider } from './ai-provider.mjs';
 import { resolveOfflineLocation } from './offline-geocoder.mjs';
 
 const isDarwin = process.platform === 'darwin';
@@ -32,6 +33,10 @@ const databasePath = path.resolve(
 const thumbnailRoot = path.resolve(
   process.env.THUMBNAIL_ROOT ?? path.join(path.dirname(databasePath), 'thumbnails'),
 );
+const aiProvider = new LocalVisionProvider({
+  python: process.env.AI_PYTHON ?? 'python3',
+  model: process.env.AI_MODEL ?? '',
+});
 const port = Number(process.env.PORT ?? 3000);
 const mediaExtensions = new Set(['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv']);
 const sidecarSuffix = '.supplemental-metadata.json';
@@ -93,6 +98,7 @@ const exiftoolSpeedArgs =
     ? ['-fast']
     : [];
 const database = new CatalogDatabase(databasePath);
+if (database.getSetting('aiSearchEnabled') === null) database.setSetting('aiSearchEnabled', false);
 const exiftoolPath = path.resolve(root, 'node_modules', 'exiftool-vendored.pl', 'bin', 'exiftool');
 
 class ExifToolWorker {
@@ -256,6 +262,8 @@ let suppressWatcherChanges = false;
 let terminalProgressDrawn = false;
 let lastTerminalDrawMs = 0;
 let lastNonTtyProgressLogMs = 0;
+let aiWorkerTimer;
+let aiWorkerRunning = false;
 const maxRetainedErrorDetails = 200;
 
 function isVideo(file) {
@@ -858,6 +866,65 @@ function recordFromDatabase(row) {
     location: row.location || undefined,
     metadataWarning: row.metadata_warning ?? undefined,
   };
+}
+
+function aiSearchEnabled() {
+  return database.getSetting('aiSearchEnabled', 'false') === 'true';
+}
+
+function stopAiWorker() {
+  if (aiWorkerTimer) {
+    clearInterval(aiWorkerTimer);
+    aiWorkerTimer = undefined;
+  }
+  aiProvider.close();
+}
+
+function isPermanentAiInputError(error) {
+  return /cannot identify image|failed to load image|no thumbnail|invalid thumbnail path/i.test(error);
+}
+
+async function processAiJob() {
+  if (!aiSearchEnabled() || aiWorkerRunning) return;
+  const job = database.claimAnalysisJob();
+  if (!job) return;
+  aiWorkerRunning = true;
+  try {
+    if (!job.thumbnail_path) throw new Error('Video has no thumbnail to analyze');
+    const thumbnailPath = path.resolve(thumbnailRoot, job.thumbnail_path);
+    if (!thumbnailPath.startsWith(`${thumbnailRoot}${path.sep}`))
+      throw new Error('Invalid thumbnail path');
+    const result = await aiProvider.analyzeThumbnail(thumbnailPath);
+    database.completeAnalysis(job.video_id, {
+      ...result,
+      ...aiProvider.describe(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const result = database.failAnalysis(job.video_id, message, {
+      retry: !isPermanentAiInputError(message),
+    });
+    if (result.skipped) {
+      console.warn(
+        `Skipping AI analysis for ${job.file_path} after ${result.attempts} attempts: ${message}`,
+      );
+    }
+  } finally {
+    aiWorkerRunning = false;
+  }
+}
+
+function startAiWorker() {
+  if (aiWorkerTimer) return;
+  database.recoverAnalysisJobs();
+  const exhausted = database.skipExhaustedAnalysisJobs();
+  for (const job of exhausted) {
+    console.warn(
+      `Skipping exhausted AI analysis for ${job.file_path} after ${job.attempts} attempts: ${job.error ?? 'unknown error'}`,
+    );
+  }
+  aiWorkerTimer = setInterval(() => void processAiJob(), 1_000);
+  void processAiJob();
 }
 
 async function readRecord(
@@ -1501,7 +1568,24 @@ const server = createServer(async (request, response) => {
     if (url.pathname === '/api/albums' && request.method === 'GET')
       return json(response, 200, { albums: database.listAlbums() });
     if (url.pathname === '/api/config' && request.method === 'GET')
-      return json(response, 200, { mediaDebug, previewTransitionMs });
+      return json(response, 200, {
+        mediaDebug,
+        previewTransitionMs,
+        aiSearchEnabled: aiSearchEnabled(),
+        aiProvider: { provider: aiProvider.describe().provider },
+        aiAnalysis: database.analysisStatus(),
+      });
+    if (url.pathname === '/api/ai-search' && request.method === 'POST') {
+      const body = await requestBody(request);
+      const enabled = body.enabled === true;
+      database.setSetting('aiSearchEnabled', enabled);
+      if (enabled) startAiWorker();
+      else stopAiWorker();
+      return json(response, 200, {
+        aiSearchEnabled: enabled,
+        aiAnalysis: database.analysisStatus(),
+      });
+    }
     if (url.pathname === '/api/scan-status' && request.method === 'GET')
       return json(response, 200, scanStatus);
     if (url.pathname === '/api/albums' && request.method === 'POST') {
@@ -1585,4 +1669,7 @@ videoWatcher = startWatcher();
 server.keepAliveTimeout = 70_000;
 server.headersTimeout = 75_000;
 server.requestTimeout = 0;
-server.listen(port, () => console.log(`Bright Video API listening on http://localhost:${port}`));
+server.listen(port, () => {
+  console.log(`Bright Video API listening on http://localhost:${port}`);
+  if (aiSearchEnabled()) startAiWorker();
+});

@@ -15,6 +15,7 @@ The Mac is the application host. BrightVideo is not intended to be installed or 
 - Automatic library watching and manual rescanning
 - SQLite catalog stored separately from the media library
 - WebP thumbnails generated locally on the Mac
+- Optional private local AI search for visual descriptions and tags
 
 ## Requirements
 
@@ -117,6 +118,30 @@ BrightVideo supports these environment variables:
 | `THUMBNAIL_CONCURRENCY` | `12` (local), `4` (NAS)   | Concurrent thumbnail encoding workers                         |
 | `DATABASE_PATH`         | `./data/bright-video.db`  | SQLite catalog file                                           |
 | `THUMBNAIL_ROOT`        | next to `DATABASE_PATH`   | Local directory for generated WebP thumbnails                 |
+| `AI_PYTHON`             | `python3`                 | Python executable with `mlx-vlm` installed                    |
+| `AI_MODEL`              |                           | Local Qwen2.5-VL MLX model directory                          |
+
+### Private AI search
+
+AI search is disabled by default and must also be enabled explicitly in the
+Settings dialog. When enabled, BrightVideo starts one persistent local MLX
+worker through the Python environment configured by `AI_PYTHON`. The worker
+loads Qwen once and accepts thumbnail requests one at a time, using only the
+local model directory and thumbnail files. The background worker writes short
+descriptions and tags into the local SQLite catalog and extends the existing
+full-text search. It does not replace regular metadata search, and it does not
+run a scan or recreate thumbnails. Failed jobs are retried at most three times
+before being logged and skipped so one problematic thumbnail cannot block the
+queue.
+
+The model is asked to return JSON content shaped like:
+
+```json
+{ "summary": "people walking beside a lake", "tags": ["people", "lake", "walking"] }
+```
+
+Install `mlx-vlm`, download Qwen2.5-VL locally, set `AI_MODEL` to that local
+directory, then enable **Private local AI search** in Settings.
 
 For a host-mounted Synology NFS share, mount the share on the machine running
 BrightVideo first, then set `VIDEO_SOURCE=nas` and point `NAS_VIDEO_ROOT` at

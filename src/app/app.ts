@@ -94,6 +94,12 @@ export class App implements OnInit {
   protected readonly loadedVideoIds = signal<Set<string>>(new Set());
   protected readonly mediaDebug = signal(false);
   protected readonly previewTransitionMs = signal(850);
+  protected readonly aiSearchEnabled = signal(false);
+  protected readonly aiAnalysis = signal<{ total: number; complete: number; pending: number }>({
+    total: 0,
+    complete: 0,
+    pending: 0,
+  });
   private suspendedLoadedVideoIds?: Set<string>;
   private previewTimer?: ReturnType<typeof setTimeout>;
   private searchTimer?: ReturnType<typeof setTimeout>;
@@ -133,11 +139,19 @@ export class App implements OnInit {
       const config = (await response.json()) as {
         mediaDebug?: boolean;
         previewTransitionMs?: number;
+        aiSearchEnabled?: boolean;
+        aiAnalysis?: { total?: number; complete?: number; pending?: number };
       };
       this.mediaDebug.set(config.mediaDebug === true);
       if (Number.isFinite(config.previewTransitionMs)) {
         this.previewTransitionMs.set(config.previewTransitionMs!);
       }
+      this.aiSearchEnabled.set(config.aiSearchEnabled === true);
+      this.aiAnalysis.set({
+        total: config.aiAnalysis?.total ?? 0,
+        complete: config.aiAnalysis?.complete ?? 0,
+        pending: config.aiAnalysis?.pending ?? 0,
+      });
     } catch {
       this.mediaDebug.set(false);
     }
@@ -558,6 +572,30 @@ export class App implements OnInit {
 
   protected closeSettings(): void {
     this.settingsOpen.set(false);
+  }
+
+  protected setAiSearchEnabled(event: Event): void {
+    const enabled = (event.target as HTMLInputElement).checked;
+    this.aiSearchEnabled.set(enabled);
+    void fetch('/api/ai-search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('AI search unavailable');
+        const body = (await response.json()) as {
+          aiSearchEnabled?: boolean;
+          aiAnalysis?: { total?: number; complete?: number; pending?: number };
+        };
+        this.aiSearchEnabled.set(body.aiSearchEnabled === true);
+        this.aiAnalysis.set({
+          total: body.aiAnalysis?.total ?? 0,
+          complete: body.aiAnalysis?.complete ?? 0,
+          pending: body.aiAnalysis?.pending ?? 0,
+        });
+      })
+      .catch(() => this.aiSearchEnabled.set(false));
   }
 
   protected setGroupingMode(event: Event): void {
