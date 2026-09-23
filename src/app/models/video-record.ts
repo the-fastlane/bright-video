@@ -17,4 +17,5 @@ export interface VideoRecord {
   photosUrl?: string;
   people?: string[];
   location?: string;
+  keywords?: string;
 }

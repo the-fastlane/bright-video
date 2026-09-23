@@ -37,6 +37,14 @@
         <span class="section-kicker">{{ dateLabel() }}</span>
         <h2>{{ video().title }}</h2>
       </div>
+      @if (keywordList().length) {
+        <div class="viewer-keywords">
+          <span class="section-kicker">Keywords</span>
+          <ul>
+            <li>{{ keywordList().join(', ') }}</li>
+          </ul>
+        </div>
+      }
     </div>
     <button
       class="viewer-nav viewer-nav-next"

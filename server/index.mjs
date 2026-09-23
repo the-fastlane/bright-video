@@ -258,6 +258,274 @@ let lastTerminalDrawMs = 0;
 let lastNonTtyProgressLogMs = 0;
 const maxRetainedErrorDetails = 200;
 
+const aiPython =
+  process.env.AI_PYTHON ??
+  path.join(process.env.HOME ?? '', '.venvs', 'bright-video-mlx', 'bin', 'python');
+const aiModel = process.env.AI_MODEL ?? 'moondream';
+const ollamaHost = process.env.OLLAMA_HOST ?? 'http://localhost:11434';
+const aiScriptPath = path.resolve(root, 'server', 'process-thumbnails-ai.py');
+const ollamaVisionProbeImage =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+let aiProcess = null;
+let aiEnabled = false;
+let ollamaProcess = null;
+let ollamaStartedByApp = false;
+let aiStatus = {
+  enabled: false,
+  active: false,
+  processed: 0,
+  total: 0,
+  remaining: 0,
+  errors: 0,
+  currentFile: null,
+  estimatedRemainingMs: null,
+  completed: false,
+  runFinished: false,
+  error: null,
+};
+let aiSuccessfulDurationMs = 0;
+let aiSuccessfulDurationCount = 0;
+let aiConsecutiveErrors = 0;
+const maxConsecutiveAiErrors = 5;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10_000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function getAiStatus() {
+  const dbStatus = database.getAiStatus();
+  let remainingMs = null;
+  if (aiProcess && aiSuccessfulDurationCount > 0) {
+    const averageSuccessfulItemMs = aiSuccessfulDurationMs / aiSuccessfulDurationCount;
+    remainingMs = Math.round(averageSuccessfulItemMs * dbStatus.remaining);
+  }
+  return {
+    ...aiStatus,
+    enabled: aiEnabled,
+    active: Boolean(aiProcess),
+    total: dbStatus.total,
+    processed: dbStatus.processed,
+    remaining: dbStatus.remaining,
+    errors: dbStatus.errors,
+    estimatedRemainingMs: remainingMs,
+    completed: dbStatus.total > 0 && dbStatus.remaining === 0,
+  };
+}
+
+async function isOllamaReady() {
+  try {
+    const host = ollamaHost.replace(/\/$/, '');
+    const tagsResponse = await fetchWithTimeout(`${host}/api/tags`, {}, 5_000);
+    if (!tagsResponse.ok) return false;
+    const probeResponse = await fetchWithTimeout(`${host}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: aiModel,
+        prompt: 'Describe this image in one short word.',
+        images: [ollamaVisionProbeImage],
+        stream: false,
+        options: { num_predict: 8 },
+      }),
+    }, 15_000);
+    if (!probeResponse.ok) return false;
+    const probe = await probeResponse.json();
+    return typeof probe.response === 'string' && probe.response.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureOllamaReady() {
+  if (await isOllamaReady()) return;
+  if (!ollamaProcess) {
+    console.log(`Ollama is unavailable. Starting ollama serve for ${ollamaHost}...`);
+    ollamaProcess = spawn('ollama', ['serve'], {
+      cwd: root,
+      env: { ...process.env, OLLAMA_HOST: ollamaHost },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    ollamaStartedByApp = true;
+    ollamaProcess.stdout.on('data', (chunk) => console.log(`[Ollama] ${chunk.toString().trim()}`));
+    ollamaProcess.stderr.on('data', (chunk) =>
+      console.error(`[Ollama] ${chunk.toString().trim()}`),
+    );
+    ollamaProcess.once('error', (error) => {
+      console.error(`Failed to start Ollama: ${error.message}`);
+    });
+    ollamaProcess.once('close', () => {
+      ollamaProcess = null;
+      ollamaStartedByApp = false;
+    });
+  }
+
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (await isOllamaReady()) return;
+  }
+  throw new Error(
+    `Ollama model "${aiModel}" did not become ready at ${ollamaHost}. ` +
+      'Check that the model is installed and that Ollama has enough memory to start its runner.',
+  );
+}
+
+function stopOwnedOllama() {
+  if (ollamaProcess && ollamaStartedByApp) {
+    console.log('Stopping Ollama started by Bright Video...');
+    ollamaProcess.kill('SIGTERM');
+  }
+}
+
+async function startAiProcessing() {
+  if (aiProcess) return getAiStatus();
+  await ensureOllamaReady();
+  aiEnabled = true;
+  const initialDbStatus = database.getAiStatus();
+  aiSuccessfulDurationMs = 0;
+  aiSuccessfulDurationCount = 0;
+  aiConsecutiveErrors = 0;
+  aiStatus = {
+    ...aiStatus,
+    enabled: true,
+    active: true,
+    processed: initialDbStatus.processed,
+    total: initialDbStatus.total,
+    remaining: initialDbStatus.remaining,
+    errors: initialDbStatus.errors,
+    completed: false,
+    runFinished: false,
+    currentFile: null,
+    error: null,
+  };
+
+  const args = [
+    aiScriptPath,
+    '--db',
+    databasePath,
+    '--thumbnails-dir',
+    thumbnailRoot,
+    '--ollama-url',
+    ollamaHost,
+    '--model',
+    aiModel,
+  ];
+
+  console.log(`Starting AI thumbnail processing with ${aiPython} (${aiModel})...`);
+  aiProcess = spawn(aiPython, args, {
+    cwd: root,
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let lineBuffer = '';
+  aiProcess.stdout.on('data', (chunk) => {
+    lineBuffer += chunk.toString();
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        if (data.event === 'item_processed') {
+          aiConsecutiveErrors = 0;
+          aiStatus.processed = data.processed;
+          aiStatus.total = data.total;
+          aiStatus.currentFile = data.filename;
+          if (Number.isFinite(data.duration_s) && data.duration_s >= 0) {
+            aiSuccessfulDurationMs += data.duration_s * 1000;
+            aiSuccessfulDurationCount += 1;
+          }
+        } else if (data.event === 'item_error') {
+          const isOllamaFailure = data.error?.startsWith('Ollama request failed') ||
+            data.error?.includes('Ollama returned an empty visual description');
+          if (isOllamaFailure) aiConsecutiveErrors += 1;
+          aiStatus.errors = (aiStatus.errors ?? 0) + 1;
+          console.warn(`[AI Item Error] ${data.filename}: ${data.error}`);
+          if (isOllamaFailure && aiConsecutiveErrors >= maxConsecutiveAiErrors && aiProcess) {
+            aiStatus.error = `AI stopped after ${maxConsecutiveAiErrors} consecutive failures: ${data.error}`;
+            aiEnabled = false;
+            aiProcess.kill('SIGTERM');
+          }
+        } else if (data.event === 'finished') {
+          aiStatus.runFinished = true;
+          if (data.total_processed >= data.total_videos) {
+            aiStatus.completed = true;
+          }
+        }
+      } catch {
+        // Ignore non-json output
+      }
+    }
+  });
+
+  aiProcess.stderr.on('data', (chunk) => {
+    console.error(`[AI Worker] ${chunk.toString().trim()}`);
+  });
+
+  aiProcess.on('close', (code) => {
+    console.log(`AI worker stopped (exit code: ${code})`);
+    aiProcess = null;
+    aiStatus.active = false;
+    aiStatus.currentFile = null;
+    const finalDbStatus = database.getAiStatus();
+    aiStatus.processed = finalDbStatus.processed;
+    aiStatus.total = finalDbStatus.total;
+    aiStatus.remaining = finalDbStatus.remaining;
+    aiStatus.errors = finalDbStatus.errors;
+    aiStatus.completed = finalDbStatus.total > 0 && finalDbStatus.remaining === 0;
+    aiStatus.runFinished = code === 0;
+    if (code !== 0 && !aiStatus.error)
+      aiStatus.error = `AI worker stopped unexpectedly (exit code ${code})`;
+    if (aiStatus.error) aiEnabled = false;
+    if (aiStatus.error) stopOwnedOllama();
+    rebuildCatalog();
+  });
+
+  return getAiStatus();
+}
+
+function stopAiProcessing() {
+  aiEnabled = false;
+  if (aiProcess) {
+    console.log('Pausing AI thumbnail processing...');
+    aiProcess.kill('SIGTERM');
+  }
+  stopOwnedOllama();
+  aiStatus.enabled = false;
+  return getAiStatus();
+}
+
+async function resetAiProcessing() {
+  const processToStop = aiProcess;
+  stopAiProcessing();
+  if (processToStop) {
+    await new Promise((resolve) => processToStop.once('close', resolve));
+  }
+  const status = database.resetAiAnalysis();
+  aiStatus = {
+    ...aiStatus,
+    enabled: false,
+    active: false,
+    processed: status.processed,
+    total: status.total,
+    remaining: status.remaining,
+    errors: status.errors,
+    currentFile: null,
+    completed: false,
+    runFinished: false,
+  };
+  rebuildCatalog();
+  return getAiStatus();
+}
+
 function isVideo(file) {
   return mediaExtensions.has(path.extname(file).toLowerCase());
 }
@@ -856,6 +1124,7 @@ function recordFromDatabase(row) {
       }
     })(),
     location: row.location || undefined,
+    keywords: row.keywords || undefined,
     metadataWarning: row.metadata_warning ?? undefined,
   };
 }
@@ -1504,6 +1773,32 @@ const server = createServer(async (request, response) => {
       return json(response, 200, { mediaDebug, previewTransitionMs });
     if (url.pathname === '/api/scan-status' && request.method === 'GET')
       return json(response, 200, scanStatus);
+    if (
+      (url.pathname === '/api/ai-status' || url.pathname === '/api/ai-indexing/status') &&
+      request.method === 'GET'
+    )
+      return json(response, 200, getAiStatus());
+    if (
+      (url.pathname === '/api/ai-process' || url.pathname === '/api/ai-indexing') &&
+      request.method === 'POST'
+    ) {
+      const body = await requestBody(request);
+      const shouldEnable = Boolean(body.enabled);
+      if (!shouldEnable) return json(response, 200, stopAiProcessing());
+      try {
+        return json(response, 200, await startAiProcessing());
+      } catch (error) {
+        aiEnabled = false;
+        aiStatus.enabled = false;
+        aiStatus.active = false;
+        aiStatus.error = error instanceof Error ? error.message : String(error);
+        stopOwnedOllama();
+        return json(response, 503, { ...getAiStatus(), error: aiStatus.error });
+      }
+    }
+    if (url.pathname === '/api/ai-reanalyze' && request.method === 'POST') {
+      return json(response, 200, await resetAiProcessing());
+    }
     if (url.pathname === '/api/albums' && request.method === 'POST') {
       const body = await requestBody(request);
       if (!String(body.name ?? '').trim())

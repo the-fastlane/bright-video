@@ -16,7 +16,10 @@ import { Album, AlbumDraft } from './models/album';
 import { TimelineYearAnchor, TimelineYearGroup, VideoGroup } from './models/timeline';
 import { DateFilterModalComponent } from './components/date-filter-modal/date-filter-modal';
 import { HeaderComponent } from './components/header/header';
-import { SettingsModalComponent } from './components/settings-modal/settings-modal';
+import {
+  AiIndexingStatus,
+  SettingsModalComponent,
+} from './components/settings-modal/settings-modal';
 import { TimelineComponent } from './components/timeline/timeline';
 import { VideoCardPreviewEvent } from './components/video-card/video-card';
 import { VideoViewerComponent } from './components/video-viewer/video-viewer';
@@ -94,9 +97,12 @@ export class App implements OnInit {
   protected readonly loadedVideoIds = signal<Set<string>>(new Set());
   protected readonly mediaDebug = signal(false);
   protected readonly previewTransitionMs = signal(850);
+  protected readonly aiStatus = signal<AiIndexingStatus | null>(null);
+  private aiAlertedError = '';
   private suspendedLoadedVideoIds?: Set<string>;
   private previewTimer?: ReturnType<typeof setTimeout>;
   private searchTimer?: ReturnType<typeof setTimeout>;
+  private aiPollTimer?: ReturnType<typeof setTimeout>;
   private catalogRequestId = 0;
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
@@ -124,6 +130,10 @@ export class App implements OnInit {
     void this.loadCatalog('', true);
     void this.loadAlbums();
     void this.resumeScanStatus();
+    void this.loadAiStatus();
+    this.destroyRef.onDestroy(() => {
+      if (this.aiPollTimer) clearTimeout(this.aiPollTimer);
+    });
   }
 
   private async loadRuntimeConfig(): Promise<void> {
@@ -550,6 +560,7 @@ export class App implements OnInit {
 
   protected openSettings(): void {
     this.settingsOpen.set(true);
+    void this.loadAiStatus();
   }
 
   protected openAlbums(): void {
@@ -558,6 +569,100 @@ export class App implements OnInit {
 
   protected closeSettings(): void {
     this.settingsOpen.set(false);
+    if (!this.aiStatus()?.active && this.aiPollTimer) {
+      clearTimeout(this.aiPollTimer);
+      this.aiPollTimer = undefined;
+    }
+  }
+
+  protected async loadAiStatus(): Promise<void> {
+    try {
+      const response = await fetch('/api/ai-status');
+      if (!response.ok) return;
+      const status: AiIndexingStatus = await response.json();
+      this.aiStatus.set(status);
+      if (status.error && status.error !== this.aiAlertedError) {
+        this.aiAlertedError = status.error;
+        alert(`AI analysis stopped: ${status.error}`);
+      }
+      if ((this.settingsOpen() || status.active) && status.active && !status.completed) {
+        this.scheduleAiPoll();
+      }
+    } catch {
+      // Ignore network errors in polling
+    }
+  }
+
+  private scheduleAiPoll(): void {
+    if (this.aiPollTimer) clearTimeout(this.aiPollTimer);
+    this.aiPollTimer = setTimeout(() => void this.loadAiStatus(), 1200);
+  }
+
+  protected async setAiEnabled(enabled: boolean): Promise<void> {
+    try {
+      const response = await fetch('/api/ai-process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      if (response.ok) {
+        const status: AiIndexingStatus = await response.json();
+        this.aiStatus.set(status);
+        this.aiAlertedError = '';
+        if (enabled && !status.completed) {
+          this.scheduleAiPoll();
+        } else if (!enabled) {
+          if (this.aiPollTimer) {
+            clearTimeout(this.aiPollTimer);
+            this.aiPollTimer = undefined;
+          }
+        }
+      } else if (enabled) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string };
+        const message = body.error ?? 'Ollama could not be started or reached.';
+        this.aiStatus.update(
+          (status) =>
+            ({
+              ...(status ?? {}),
+              enabled: false,
+              active: false,
+              error: message,
+            }) as AiIndexingStatus,
+        );
+        this.aiAlertedError = message;
+        alert(`AI analysis could not start: ${message}`);
+      }
+    } catch (error) {
+      console.error('Failed to toggle AI processing:', error);
+      if (enabled) {
+        const message = error instanceof Error ? error.message : 'Unable to start AI analysis.';
+        this.aiStatus.update(
+          (status) =>
+            ({
+              ...(status ?? {}),
+              enabled: false,
+              active: false,
+              error: message,
+            }) as AiIndexingStatus,
+        );
+        this.aiAlertedError = message;
+        alert(`AI analysis could not start: ${message}`);
+      }
+    }
+  }
+
+  protected async resetAiAnalysis(): Promise<void> {
+    if (!window.confirm('Clear all AI keywords and analysis results? This cannot be undone.'))
+      return;
+    try {
+      const response = await fetch('/api/ai-reanalyze', { method: 'POST' });
+      if (!response.ok) return;
+      const status: AiIndexingStatus = await response.json();
+      this.aiStatus.set(status);
+      await this.loadCatalog();
+    } catch (error) {
+      console.error('Failed to reset AI analysis:', error);
+    }
   }
 
   protected setGroupingMode(event: Event): void {
