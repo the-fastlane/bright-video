@@ -25,11 +25,15 @@ const schema = `
     metadata_source TEXT,
     metadata_updated_at TEXT NOT NULL,
     file_signature TEXT NOT NULL,
-    thumbnail_path TEXT
+    thumbnail_path TEXT,
+    people TEXT NOT NULL DEFAULT '',
+    location TEXT NOT NULL DEFAULT '',
+    keywords TEXT NOT NULL DEFAULT ''
   );
 
   CREATE INDEX IF NOT EXISTS videos_capture_date_idx ON videos(capture_date);
   CREATE INDEX IF NOT EXISTS videos_duration_idx ON videos(duration_ms);
+  CREATE INDEX IF NOT EXISTS videos_keywords_idx ON videos(keywords);
 
   CREATE TABLE IF NOT EXISTS albums (
     id INTEGER PRIMARY KEY,
@@ -78,6 +82,7 @@ const schema = `
     model TEXT,
     analyzed_at TEXT,
     error TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
   );
 
@@ -99,7 +104,10 @@ const schema = `
     title,
     description,
     summary,
-    tags
+    tags,
+    people,
+    location,
+    keywords
   );
 `;
 
@@ -112,7 +120,7 @@ function normalizeSearch(value) {
     .trim()
     .split(/\s+/)
     .filter(Boolean)
-    .map((term) => `"${term.replaceAll('"', '""')}"`)
+    .map((term) => `"${term.replaceAll('"', '""').replaceAll('*', '')}"*`)
     .join(' AND ');
 }
 
@@ -148,12 +156,48 @@ export class CatalogDatabase {
     const columns = this.#db.prepare('PRAGMA table_info(videos)').all();
     if (!columns.some((column) => column.name === 'thumbnail_path'))
       this.#db.exec('ALTER TABLE videos ADD COLUMN thumbnail_path TEXT');
+    if (!columns.some((column) => column.name === 'people'))
+      this.#db.exec("ALTER TABLE videos ADD COLUMN people TEXT NOT NULL DEFAULT ''");
+    if (!columns.some((column) => column.name === 'location'))
+      this.#db.exec("ALTER TABLE videos ADD COLUMN location TEXT NOT NULL DEFAULT ''");
+    if (!columns.some((column) => column.name === 'keywords'))
+      this.#db.exec("ALTER TABLE videos ADD COLUMN keywords TEXT NOT NULL DEFAULT ''");
+
+    const analysisColumns = this.#db.prepare('PRAGMA table_info(video_analysis)').all();
+    if (!analysisColumns.some((column) => column.name === 'retry_count'))
+      this.#db.exec('ALTER TABLE video_analysis ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0');
+
+    const searchColumns = this.#db.prepare('PRAGMA table_info(video_search)').all();
+    if (!searchColumns.some((column) => column.name === 'keywords')) {
+      this.#db.exec('ALTER TABLE video_search RENAME TO video_search_legacy');
+      this.#db.exec(`
+        CREATE VIRTUAL TABLE video_search USING fts5(
+          video_id UNINDEXED,
+          title,
+          description,
+          summary,
+          tags,
+          people,
+          location,
+          keywords
+        )
+      `);
+      this.#db.exec(`
+        INSERT INTO video_search (video_id, title, description, summary, tags, people, location, keywords)
+        SELECT legacy.video_id, legacy.title, legacy.description, legacy.summary, legacy.tags,
+          legacy.people, legacy.location, COALESCE(videos.keywords, '')
+        FROM video_search_legacy AS legacy
+        LEFT JOIN videos ON videos.id = legacy.video_id
+      `);
+      this.#db.exec('DROP TABLE video_search_legacy');
+    }
     this.#upsertVideo = this.#db.prepare(`
       INSERT INTO videos (
         file_path, filename, title, description, format, file_size, modified_at,
         capture_date, duration_ms, width, height, latitude, longitude, altitude,
-        metadata_warning, metadata_source, metadata_updated_at, file_signature, thumbnail_path
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        metadata_warning, metadata_source, metadata_updated_at, file_signature, thumbnail_path,
+        people, location, keywords
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(file_path) DO UPDATE SET
         filename = excluded.filename,
         title = excluded.title,
@@ -172,8 +216,11 @@ export class CatalogDatabase {
         metadata_source = excluded.metadata_source,
         metadata_updated_at = excluded.metadata_updated_at,
         file_signature = excluded.file_signature,
-        thumbnail_path = excluded.thumbnail_path
-      RETURNING id
+        thumbnail_path = excluded.thumbnail_path,
+        people = excluded.people,
+        location = excluded.location,
+        keywords = CASE WHEN excluded.keywords != '' THEN excluded.keywords ELSE videos.keywords END
+      RETURNING id, keywords
     `);
     this.#deleteVideo = this.#db.prepare('DELETE FROM videos WHERE file_path = ?');
     this.#selectVideo = this.#db.prepare('SELECT * FROM videos WHERE file_path = ?');
@@ -189,7 +236,7 @@ export class CatalogDatabase {
     `);
     this.#deleteSearch = this.#db.prepare('DELETE FROM video_search WHERE video_id = ?');
     this.#insertSearch = this.#db.prepare(
-      'INSERT INTO video_search (video_id, title, description, summary, tags) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO video_search (video_id, title, description, summary, tags, people, location, keywords) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     );
     this.#selectAlbums = this.#db.prepare(
       'SELECT id, name, description, display_order, created_at, updated_at FROM albums ORDER BY display_order, id',
@@ -231,13 +278,103 @@ export class CatalogDatabase {
       now(),
       video.fileSignature,
       video.thumbnailPath ?? null,
+      video.people ?? '',
+      video.location ?? '',
+      video.keywords ?? '',
     );
     const timestamp = now();
     this.#deleteSearch.run(row.id);
-    this.#insertSearch.run(row.id, `${video.title} ${video.filename}`, video.description, '', '');
+    this.#insertSearch.run(
+      row.id,
+      `${video.title} ${video.filename}`,
+      video.description,
+      '',
+      '',
+      video.people ?? '',
+      video.location ?? '',
+      row.keywords ?? video.keywords ?? '',
+    );
     this.#insertAnalysis.run(row.id);
     this.#insertAnalysisJob.run(row.id, timestamp);
     return { id: row.id };
+  }
+
+  updateVideoKeywords(videoId, keywords) {
+    const timestamp = now();
+    this.#db.prepare('UPDATE videos SET keywords = ? WHERE id = ?').run(keywords, videoId);
+    this.#deleteSearch.run(videoId);
+    this.#db
+      .prepare(
+        `INSERT INTO video_search (video_id, title, description, summary, tags, people, location, keywords)
+         SELECT id, title || ' ' || filename, description, '', '', people, location, keywords
+         FROM videos WHERE id = ?`,
+      )
+      .run(videoId);
+    this.#db
+      .prepare(
+        `INSERT INTO video_analysis (video_id, status, summary, provider, model, analyzed_at, error, retry_count)
+         VALUES (?, 'completed', ?, 'ollama', 'moondream', ?, NULL, 0)
+         ON CONFLICT(video_id) DO UPDATE SET
+           status = 'completed',
+           summary = excluded.summary,
+           provider = 'ollama',
+           model = 'moondream',
+           analyzed_at = excluded.analyzed_at,
+           error = NULL`,
+      )
+      .run(videoId, keywords, timestamp);
+  }
+
+  recordAnalysisFailure(videoId, error) {
+    const timestamp = now();
+    this.#db
+      .prepare(
+        `INSERT INTO video_analysis (video_id, status, summary, provider, model, analyzed_at, error, retry_count)
+         VALUES (?, 'failed', '', 'ollama', 'moondream', ?, ?, 1)
+         ON CONFLICT(video_id) DO UPDATE SET
+           status = 'failed',
+           analyzed_at = excluded.analyzed_at,
+           error = excluded.error,
+           retry_count = video_analysis.retry_count + 1`,
+      )
+      .run(videoId, timestamp, error);
+  }
+
+  resetAiAnalysis() {
+    this.#db.exec(`
+      BEGIN;
+      UPDATE videos SET keywords = '';
+      UPDATE video_analysis
+      SET status = 'pending', summary = '', provider = NULL, model = NULL,
+          analyzed_at = NULL, error = NULL, retry_count = 0;
+      DELETE FROM video_search;
+      INSERT INTO video_search (video_id, title, description, summary, tags, people, location, keywords)
+      SELECT id, title || ' ' || filename, description, '', '', people, location, ''
+      FROM videos;
+      COMMIT;
+    `);
+    return this.getAiStatus();
+  }
+
+  getAiStatus() {
+    const totalRow = this.#db.prepare('SELECT COUNT(*) as count FROM videos').get();
+    const processedRow = this.#db
+      .prepare("SELECT COUNT(*) as count FROM videos WHERE keywords != ''")
+      .get();
+    const errorRow = this.#db
+      .prepare(
+        "SELECT COUNT(*) as count FROM video_analysis WHERE status = 'failed' AND retry_count >= 2",
+      )
+      .get();
+    const total = totalRow?.count ?? 0;
+    const processed = processedRow?.count ?? 0;
+    const errors = errorRow?.count ?? 0;
+    return {
+      total,
+      processed,
+      errors,
+      remaining: Math.max(0, total - processed - errors),
+    };
   }
 
   listSignatures() {

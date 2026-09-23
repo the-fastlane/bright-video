@@ -125,10 +125,21 @@
       class="rescan-button"
       type="button"
       [disabled]="rescanning()"
+      (click)="reindexSearch.emit()"
+      aria-label="Reindex search metadata without recreating thumbnails"
+      title="Refresh people, locations, and search fields without recreating thumbnails"
+    >
+      <span class="rescan-icon">⌕</span>Reindex Search
+    </button>
+    <button
+      class="rescan-button"
+      type="button"
+      [disabled]="rescanning()"
       (click)="reindexLibrary.emit()"
       aria-label="Reindex entire library"
+      title="Rebuild the catalog and thumbnails"
     >
-      <span class="rescan-icon">⟳</span>Reindex
+      <span class="rescan-icon">⟳</span>Reindex ALL
     </button>
     <div
       class="rescan-feedback"

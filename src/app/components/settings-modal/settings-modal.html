@@ -67,5 +67,64 @@
         aria-label="Grid spacing in pixels"
       />
     </label>
+
+    <div class="settings-divider"></div>
+
+    <div class="settings-ai-section">
+      <label class="settings-ai-toggle">
+        <input type="checkbox" [checked]="aiStatus()?.enabled" (change)="onAiToggle($event)" />
+        <span>
+          <strong>AI Visual Search Keywords</strong>
+          <small
+            >Analyze thumbnails in the background with local Moondream vision model to enable smart
+            object, scene, and color searches.</small
+          >
+        </span>
+      </label>
+
+      @if (aiStatus(); as status) {
+        @if (status.error) {
+          <p class="settings-ai-error" role="alert">{{ status.error }}</p>
+        }
+        <div class="settings-ai-status">
+          <div class="settings-ai-progress-text">
+            <span
+              ><strong>{{ status.processed.toLocaleString() }}</strong> of
+              <strong>{{ status.total.toLocaleString() }}</strong> processed</span
+            >
+            @if (status.active && status.estimatedRemainingMs) {
+              <span class="settings-ai-eta">{{ formatEta(status.estimatedRemainingMs) }}</span>
+            } @else if (status.completed) {
+              <span class="settings-ai-badge completed">Complete</span>
+            } @else if (status.runFinished) {
+              <span class="settings-ai-badge">Finished · {{ status.remaining }} remaining</span>
+            } @else if (!status.active && status.enabled) {
+              <span class="settings-ai-badge">Starting…</span>
+            } @else if (!status.active && status.total > 0 && status.processed > 0) {
+              <span class="settings-ai-badge paused">Paused</span>
+            }
+          </div>
+          <div
+            class="settings-ai-progress-bar"
+            role="progressbar"
+            [attr.aria-valuenow]="status.processed"
+            [attr.aria-valuemin]="0"
+            [attr.aria-valuemax]="status.total"
+          >
+            <div class="settings-ai-progress-fill" [style.width.%]="progressPercent(status)"></div>
+          </div>
+          @if (status.active && status.currentFile) {
+            <small class="settings-ai-current-file">Analyzing: {{ status.currentFile }}</small>
+          }
+        </div>
+      }
+      <button class="secondary-button settings-ai-reset" type="button" (click)="aiReset.emit()">
+        Reset AI analysis
+      </button>
+      <small class="settings-ai-reset-note"
+        >Clears existing visual keywords and analysis results. AI stays off until you enable it
+        again.</small
+      >
+    </div>
   </section>
 </div>

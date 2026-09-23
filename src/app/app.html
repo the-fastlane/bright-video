@@ -20,6 +20,7 @@
     (openAlbums)="openAlbums()"
     (scanLibrary)="scanLibrary()"
     (stopScan)="stopScan()"
+    (reindexSearch)="reindexSearch()"
     (reindexLibrary)="reindexLibrary()"
     (searchChange)="setSearchQuery($event)"
   />
@@ -58,9 +59,12 @@
   <app-settings-modal
     [groupingMode]="groupingMode()"
     [gridGap]="gridGap()"
+    [aiStatus]="aiStatus()"
     (close)="closeSettings()"
     (groupingChange)="setGroupingMode($event)"
     (gridGapChange)="setGridGap($event)"
+    (aiToggleChange)="setAiEnabled($event)"
+    (aiReset)="resetAiAnalysis()"
   />
 }
 

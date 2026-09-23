@@ -19,7 +19,7 @@ app-video-card {
 }
 
 .video-card:focus-visible .media-frame {
-  box-shadow: 0 0 0 3px var(--coral);
+  border: 3px solid var(--coral);
 }
 
 .media-frame {

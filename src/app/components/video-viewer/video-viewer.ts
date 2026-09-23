@@ -45,6 +45,13 @@ export class VideoViewerComponent implements OnChanges, OnDestroy {
     this.mediaLoading.set(false);
   }
 
+  protected keywordList(): string[] {
+    return (this.video().keywords ?? '')
+      .split(',')
+      .map((keyword) => keyword.trim())
+      .filter(Boolean);
+  }
+
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['video'] && !changes['video'].firstChange) {
       this.mediaLoading.set(true);
